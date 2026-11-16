@@ -1,0 +1,22 @@
+{
+  "hardware": "echo-dot2-rs03qr-biscuit",
+  "puck_host": "192.0.2.10",
+  "puck_port": 16700,
+  "wake_phrase": "hey vector",
+  "vosk_model": "/models/vosk-model-small-en-us-0.15",
+  "whisper_model": "/models/faster-whisper-base.en",
+  "cpu_threads": 4,
+  "conversation_model": "gpt-6-astra",
+  "voice_model": "gpt-realtime-2.1-mini",
+  "voice": "cedar",
+  "key_file": "/run/secrets/openai_key",
+  "followup_seconds": 8,
+  "followup_turns": 3,
+  "session_seconds": 180,
+  "history_seconds": 1200,
+  "max_request_chars": 800,
+  "hourly_requests": 30,
+  "daily_requests": 100,
+  "working_sound": true,
+  "experimental_spoken_stop": false
+}

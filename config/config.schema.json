@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:vector-puck:config",
+  "title": "Vector Puck configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "hardware": {
+      "type": "string",
+      "default": "echo-dot2-rs03qr-biscuit",
+      "const": "echo-dot2-rs03qr-biscuit"
+    },
+    "puck_host": {
+      "type": "string",
+      "default": "192.0.2.10",
+      "format": "ipv4"
+    },
+    "puck_port": {
+      "type": "integer",
+      "default": 16700,
+      "minimum": 1024,
+      "maximum": 65535
+    },
+    "wake_phrase": {
+      "type": "string",
+      "default": "hey vector",
+      "pattern": "^[a-z]+(?: [a-z]+){1,3}$"
+    },
+    "vosk_model": {
+      "type": "string",
+      "default": "/models/vosk-model-small-en-us-0.15",
+      "pattern": "^/"
+    },
+    "whisper_model": {
+      "type": "string",
+      "default": "/models/faster-whisper-base.en",
+      "pattern": "^/"
+    },
+    "cpu_threads": {
+      "type": "integer",
+      "default": 4,
+      "minimum": 1,
+      "maximum": 16
+    },
+    "conversation_model": {
+      "type": "string",
+      "default": "gpt-6-astra",
+      "pattern": "^[a-zA-Z0-9._-]{1,80}$"
+    },
+    "voice_model": {
+      "type": "string",
+      "default": "gpt-realtime-2.1-mini",
+      "pattern": "^[a-zA-Z0-9._-]{1,80}$"
+    },
+    "voice": {
+      "type": "string",
+      "default": "cedar",
+      "const": "cedar"
+    },
+    "key_file": {
+      "type": "string",
+      "default": "/run/secrets/openai_key",
+      "pattern": "^/"
+    },
+    "followup_seconds": {
+      "type": "integer",
+      "default": 8,
+      "minimum": 0,
+      "maximum": 15
+    },
+    "followup_turns": {
+      "type": "integer",
+      "default": 3,
+      "minimum": 0,
+      "maximum": 5
+    },
+    "session_seconds": {
+      "type": "integer",
+      "default": 180,
+      "minimum": 10,
+      "maximum": 300
+    },
+    "history_seconds": {
+      "type": "integer",
+      "default": 1200,
+      "minimum": 0,
+      "maximum": 1200
+    },
+    "max_request_chars": {
+      "type": "integer",
+      "default": 800,
+      "minimum": 1,
+      "maximum": 800
+    },
+    "hourly_requests": {
+      "type": "integer",
+      "default": 30,
+      "minimum": 1,
+      "maximum": 60
+    },
+    "daily_requests": {
+      "type": "integer",
+      "default": 100,
+      "minimum": 1,
+      "maximum": 500
+    },
+    "working_sound": {
+      "type": "boolean",
+      "default": true
+    },
+    "experimental_spoken_stop": {
+      "type": "boolean",
+      "default": false,
+      "const": false
+    }
+  }
+}

@@ -1,0 +1,19 @@
+The Python controller, original working tune, and packaging are provided under
+the repository's MIT license.
+
+The C patch modifies Gamer92000/echo-dot-assist, pinned at commit
+8646a4f2f4aeafde2d7aca7359d9eff555a169c0. That project is MIT licensed:
+Copyright (c) 2026 Julian Imhof. Its license is reproduced in
+patches/UPSTREAM-LICENSE. The upstream project includes additional third-party
+components with their own notices; retain them when building upstream source.
+
+No Amazon firmware, proprietary libraries, stock binaries, boot images,
+rooting-tool binaries, downloaded model weights, Android NDK, credentials, or
+recordings are distributed in this repository.
+
+Model download metadata identifies Vosk (Apache-2.0) and the converted Whisper
+model (MIT). Downloaded artifacts remain subject to their original licenses.
+
+Amazon, Alexa, Echo, OpenAI, GPT, and other product names identify compatibility
+and their respective owners. This is a community project, not an official
+Amazon or OpenAI product.

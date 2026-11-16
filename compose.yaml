@@ -1,0 +1,37 @@
+services:
+  vector:
+    build: .
+    image: vector-puck:local
+    restart: unless-stopped
+    init: true
+    user: "${LOCAL_UID:?Run scripts/setup_local.py}:${LOCAL_GID:?Run scripts/setup_local.py}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 2g
+    pids_limit: 128
+    stop_grace_period: 10s
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    secrets:
+      - openai_key
+    volumes:
+      - ./config/local.json:/config/local.json:ro
+      - ./models:/models:ro
+      - ./state:/state:rw
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,time; from pathlib import Path; p=Path('/state/health.json'); x=json.loads(p.read_text()); assert time.time()-p.stat().st_mtime<30 and x['connected']"
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 2
+    logging:
+      driver: json-file
+      options: {max-size: "2m", max-file: "2"}
+secrets:
+  openai_key:
+    file: "${OPENAI_KEY_FILE:?Run scripts/setup_local.py with an external private key file}"

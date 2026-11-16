@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vector-puck"
+version = "0.1.0"
+description = "Local wake and speech recognition for a rooted Echo Dot 2, with GPT and Cedar replies"
+requires-python = ">=3.12,<3.15"
+license = "MIT"
+dependencies = [
+  "faster-whisper==1.2.1", "vosk==0.3.45", "numpy==2.2.6",
+  "websockets==15.0.1", "httpx==0.28.1",
+]
+
+[project.scripts]
+vector-puck = "vector_puck.resident:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
