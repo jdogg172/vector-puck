@@ -11,11 +11,11 @@ This is a community experiment for hardware owners. The controller and patches a
 - An original, locally synthesized working tune while the answer is prepared.
 - An eight-second follow-up window after playback, bounded by turn and session limits.
 - Physical microphone mute and Action-button cancellation, including queued speaker audio.
+- Experimental local spoken stop during the working tune and Cedar replies, with a short confirmation tone.
+- Optional, allowlisted Home Assistant audio, thermostat, and TV-script controls, starting in dry-run mode.
 - A restricted Docker controller, checksum-pinned model downloads, tests, and rollback instructions.
 
-**Version 0.1 is a portable conversation baseline.** It does not include web search, Home Assistant, TV control, calendars, weather sources, or any household configuration. It has no arbitrary shell or device-control tools. The Echo patch includes a `vector-stop` protocol hook, but the portable controller does **not** yet include the experimental spoken-stop recognition worker. Use the physical Action button to cancel an answer.
-
-The household prototype has additional integrations. Those are deliberately outside this initial portable release. The public package has offline software validation; it still needs independent hardware acceptance. See [validation](docs/VALIDATION.md).
+**Version 0.2 adds spoken stop and optional home control.** Home control remains disabled until an owner configures it, and the controller never exposes generic shell or HA-service tools. Web search, calendars, live weather sources, and household deployment settings are not included. The public package has offline software validation; it still needs independent hardware acceptance. See [validation](docs/VALIDATION.md).
 
 ## Requirements
 
@@ -26,6 +26,8 @@ The household prototype has additional integrations. Those are deliberately outs
 - Your own OpenAI API project/key with access to the configured models. API charges are separate from a ChatGPT subscription. Defaults are `gpt-6-astra` for answers and `gpt-realtime-2.1-mini` for Cedar speech; both requests can incur charges.
 
 Only one Wyoming controller should connect to the puck. Disconnect an existing Home Assistant Wyoming integration before using this controller.
+
+Looking for inexpensive room hardware? See [device choices and exact model numbers](docs/DEVICE_CHOICES.md). Upstream support for another model does not establish compatibility with this repository's Dot 2 patch and installer.
 
 ## 1. Prepare the hardware
 
@@ -111,7 +113,49 @@ python3 -m json.tool state/health.json
 
 Unmute the puck, ask “Hey Vector, why does thunder happen?”, and wait for its reply. After the ready chime, say “Explain that more simply” within eight seconds. Check the physical mute button and Action cancellation before relying on it. Follow-ups are limited to three turns and a three-minute session by default.
 
+During a long reply, say “Hey Vector, stop.” The local worker confirms an addressed stop, discards queued output, and requests the puck's short confirmation tone. Physical Action and mute remain available. New configurations enable `experimental_spoken_stop`; existing configurations that explicitly set it to `false` stay disabled. Read [spoken-stop behavior and limits](docs/SPOKEN_STOP.md) before changing it.
+
 The controller has no published inbound port. The puck's Wyoming port **16700 is an unauthenticated LAN service**; keep it on a trusted or isolated network and never forward it to the Internet. Retain the upstream device firewall. See [privacy and network boundaries](docs/PRIVACY.md).
+
+## 5. Optional Home Assistant and TV controls
+
+Skip this section for conversation only. Use a dedicated HA user and a long-lived access token appropriate for that account. The client limits its own requests; those limits do not reduce the token's server-side authority. Create the token privately in HA, then use this hidden local prompt to store it outside the checkout:
+
+```bash
+python3 - <<'PY'
+import getpass
+import os
+from pathlib import Path
+import re
+
+directory = Path.home() / '.config' / 'vector-puck'
+directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+token = getpass.getpass('Home Assistant access token (hidden): ').strip()
+if not re.fullmatch(r'[A-Za-z0-9._~+/=-]{20,4096}', token):
+    raise SystemExit('Token format rejected; nothing was written.')
+path = directory / 'homeassistant.token'
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+with os.fdopen(fd, 'w') as output:
+    output.write(token + '\n')
+print('Saved an external private token file.')
+PY
+read -r -p 'Home Assistant LAN origin, including http(s) and port: ' ha_url
+python3 scripts/setup_home.py \
+  --url "$ha_url" \
+  --token-file "$HOME/.config/vector-puck/homeassistant.token"
+```
+
+Setup checks file metadata without reading the token, backs up existing local files under ignored `.cache/`, and creates ignored `config/homeassistant.local.json` in **dry-run mode**. It also updates `config/local.json` and `.env` for the optional Compose override. Repeat setup refuses to overwrite an existing mapping.
+
+**Review and edit that private mapping before running.** Replace every example entity with your own HA entity, remove unused targets, map source names, and set sensible volume and temperature limits. TV actions are your reviewed HA `script.*` entities for opening an app, channel or dashboard. [The complete guide](docs/HOME_ASSISTANT.md) explains unit validation, aliases, permitted operations, and result verification.
+
+```bash
+docker compose -f compose.yaml -f compose.homeassistant.yaml config --quiet
+docker compose -f compose.yaml -f compose.homeassistant.yaml run --rm --no-deps vector --check-config
+docker compose -f compose.yaml -f compose.homeassistant.yaml up -d --build
+```
+
+Ask for a configured device's status, then request one small change. In dry-run mode it reads the target and validates the proposed change but sends **no control command**. After reviewing the results, set `mode` to `control` in the private mapping and restart using the same two Compose files. Verify actual hardware outcomes before relying on them. Stop using the same two-file command with `stop`; to remove this integration, clear `home_assistant_file` and recreate the service with only `compose.yaml`.
 
 ## Troubleshooting
 
@@ -124,7 +168,8 @@ The controller has no published inbound port. The puck's Wyoming port **16700 is
 | Model load failure | Run the offline verification command and check RAM. Download models before starting. |
 | Cloud request failure | Check API project billing/model access and the configured model names. Logs intentionally omit provider response bodies and credentials. |
 | Too many requests | Defaults allow 30 attempts/hour and 100/day. Failed attempts count too; these are request limits, not a dollar spending cap. |
-| Voice will not stop on spoken command | Spoken stop is not enabled in this portable release. Press Action or physical microphone mute. |
+| Voice will not stop on spoken command | Check `experimental_spoken_stop`, `interrupt_worker_running` in health, placement, and CPU load. Use an addressed phrase such as “Hey Vector, stop.” Press Action or physical mute if it misses. |
+| Home command is rejected or unchanged | Check dry-run mode, configured alias/limits, device availability, and thermostat unit metadata. A submitted TV script is not confirmation of a visible screen change. |
 | False wakes or poor room pickup | Place the puck away from TV speakers and test from the actual seating position. Recognition settings are in local config; validate changes against both false wakes and missed requests. |
 
 Stop the controller with `docker compose stop`. Do not delete the satellite config as a way to disable it: upstream uses that file as part of its startup behavior.
@@ -134,7 +179,7 @@ Stop the controller with `docker compose stop`. Do not delete the satellite conf
 ```bash
 docker build -t vector-puck:test .
 docker run --rm --network none --read-only \
-  --tmpfs /tmp:rw,nosuid,size=64m --cap-drop ALL \
+  --tmpfs /tmp:rw,noexec,nosuid,size=64m --cap-drop ALL \
   --security-opt no-new-privileges:true \
   -v "$PWD:/repo:ro" -w /repo --entrypoint python \
   vector-puck:test -m unittest discover -s tests -p 'test_*.py' -v

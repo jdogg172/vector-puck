@@ -24,7 +24,7 @@ services:
         - CMD
         - python
         - -c
-        - "import json,time; from pathlib import Path; p=Path('/state/health.json'); x=json.loads(p.read_text()); assert time.time()-p.stat().st_mtime<30 and x['connected']"
+        - "import json,time; from pathlib import Path; p=Path('/state/health.json'); x=json.loads(p.read_text()); assert time.time()-p.stat().st_mtime<30 and x['connected'] and (not x.get('spoken_stop') or x.get('interrupt_worker_running'))"
       interval: 15s
       timeout: 5s
       start_period: 60s

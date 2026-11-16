@@ -13,7 +13,8 @@ dist/
 .hardware/
 models/
 state/
-config/local.json
+config/local.json*
+config/homeassistant.local.json*
 private/
 secrets/
 *.pem

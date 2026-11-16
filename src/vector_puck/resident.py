@@ -13,6 +13,7 @@ import time
 from .cloud_voice import Dialogue, read_key
 from .config import Config
 from .speech import Speech, done, question
+from .spoken_stop import interruptions
 from .state import Cancelled, FollowUp, Gate
 from .transport import REPLY_FORMAT, check_audio, read_event, send_event
 from .tune import working_audio
@@ -30,6 +31,11 @@ class Satellite:
         self.gate = Gate()
         self.followup = FollowUp(config.followup_seconds, config.followup_turns, config.session_seconds)
         self.events = asyncio.Queue(maxsize=128)
+        self.interrupt_audio = asyncio.Queue(maxsize=30)
+        self.interrupt_worker_running = False
+        self.interrupt_serial = 0
+        self.interrupt_checks = {"audio_seconds": 0.0, "local_checks": 0,
+                                 "confirmed": 0, "max_rms": 0.0}
         self.write_lock = asyncio.Lock()
         self.active = None
         self.busy = self.speaking = self.output_open = self.barge_stream = False
@@ -86,6 +92,11 @@ class Satellite:
                     self.last_audio = self.last_event
                     self.barge_stream = data.get("vector_barge_in") is True
                     if self.barge_stream:
+                        self.interrupt_serial += 1
+                        self.interrupt_checks = {"audio_seconds": 0.0, "local_checks": 0,
+                                                 "confirmed": 0, "max_rms": 0.0}
+                        while not self.interrupt_audio.empty():
+                            self.interrupt_audio.get_nowait()
                         continue  # Never interpret a stop-only stream as a conversation turn.
                     if self.busy:
                         self.invalidate()
@@ -99,7 +110,14 @@ class Satellite:
                         self.dialogue.played(pending[1], pending[2])
                     self.pending_history = None
                     continue
-                if kind == "audio-chunk" and (self.busy or self.barge_stream or self.gate.muted):
+                if kind == "audio-chunk" and self.barge_stream:
+                    if self.config.experimental_spoken_stop and not self.gate.muted:
+                        if self.interrupt_audio.full():
+                            self.interrupt_audio.get_nowait()
+                        self.interrupt_audio.put_nowait((self.gate.epoch, self.interrupt_serial,
+                                                        data, event[2]))
+                    continue
+                if kind == "audio-chunk" and (self.busy or self.gate.muted):
                     continue
                 if kind in {"vector-mute", "vector-cancel"}:
                     while not self.events.empty():
@@ -126,7 +144,10 @@ class Satellite:
                 "updated": time.time(), "connected": self.gate.connected,
                 "muted": self.gate.muted, "busy": self.busy, "speaking": self.speaking,
                 "followup_open": self.followup.active(),
-                "spoken_stop": "not_packaged_experimental_upstream_patch",
+                "spoken_stop": self.config.experimental_spoken_stop,
+                "interrupt_worker_running": self.interrupt_worker_running,
+                "interrupt_listening": self.barge_stream,
+                "interrupt_checks": self.interrupt_checks.copy(),
             }))
             temp.replace(state / "health.json")
             now = time.monotonic()
@@ -186,6 +207,8 @@ async def respond(satellite, query, epoch):
     cue_task = asyncio.create_task(working(satellite, epoch, finished)) if satellite.config.working_sound else None
     completed = False
     try:
+        if satellite.config.experimental_spoken_stop:
+            await satellite.send("vector-listen")
         result, pcm = await satellite.dialogue.respond(query, lambda: satellite.gate.guard(epoch))
         finished.set()
         if cue_task:
@@ -332,8 +355,10 @@ async def session(config, speech, dialogue, stop, state):
         if type(details.get("vector_muted")) is not bool:
             raise ValueError("Satellite must report physical mute state")
         satellite.gate.muted = details["vector_muted"]
-        tasks = [asyncio.create_task(satellite.pump()),
-                 asyncio.create_task(satellite.monitor(state))]
+        if config.experimental_spoken_stop:
+            tasks.append(asyncio.create_task(interruptions(satellite, speech)))
+        tasks.extend([asyncio.create_task(satellite.pump()),
+                      asyncio.create_task(satellite.monitor(state))])
         if not satellite.gate.muted:
             await satellite.send("run-satellite")
         status("connected")
@@ -356,7 +381,11 @@ async def run(config, state):
     key = read_key(Path(config.key_file))
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
     speech = Speech(config)
-    dialogue = Dialogue(config, key, state)
+    home = None
+    if config.home_assistant_file:
+        from .home_control import HomeControl
+        home = HomeControl.load(Path(config.home_assistant_file))
+    dialogue = Dialogue(config, key, state, home=home)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     runner = asyncio.current_task()
@@ -388,6 +417,9 @@ def main():
     try:
         config = Config.load(args.config)
         if args.check_config:
+            if config.home_assistant_file:
+                from .home_control import HomeControl
+                HomeControl.read_config(Path(config.home_assistant_file))
             status("config_valid")  # No credential or device access.
             return
         asyncio.run(run(config, args.state))

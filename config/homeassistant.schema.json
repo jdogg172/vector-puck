@@ -1,0 +1,175 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "base_url": {
+      "type": "string",
+      "maxLength": 100,
+      "format": "uri",
+      "pattern": "^https?://(?:10\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.|192\\.0\\.2\\.)[0-9.]+(?::[0-9]{1,5})?/?$"
+    },
+    "token_file": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^/"
+    },
+    "mode": {
+      "enum": [
+        "dry_run",
+        "control"
+      ],
+      "default": "dry_run"
+    },
+    "media_players": {
+      "type": "object",
+      "maxProperties": 16,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]{0,31}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "pattern": "^media_player\\.[a-z0-9_]{1,100}$"
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9 ,()'&.!?-]*$"
+          },
+          "max_volume": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1
+          },
+          "volume_step": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 0.2
+          },
+          "sources": {
+            "type": "object",
+            "maxProperties": 16,
+            "propertyNames": {
+              "pattern": "^[a-z][a-z0-9_]{0,31}$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "pattern": "^[^\\u0000-\\u001f]+$"
+            },
+            "default": {}
+          }
+        },
+        "required": [
+          "entity_id",
+          "label",
+          "max_volume",
+          "volume_step",
+          "sources"
+        ]
+      },
+      "default": {}
+    },
+    "thermostats": {
+      "type": "object",
+      "maxProperties": 16,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]{0,31}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "pattern": "^climate\\.[a-z0-9_]{1,100}$"
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9 ,()'&.!?-]*$"
+          },
+          "unit": {
+            "enum": [
+              "F",
+              "C"
+            ]
+          },
+          "minimum": {
+            "type": "number",
+            "minimum": -100,
+            "maximum": 200
+          },
+          "maximum": {
+            "type": "number",
+            "minimum": -100,
+            "maximum": 200
+          },
+          "max_delta": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 300
+          }
+        },
+        "required": [
+          "entity_id",
+          "label",
+          "unit",
+          "minimum",
+          "maximum",
+          "max_delta"
+        ]
+      },
+      "default": {}
+    },
+    "tv_actions": {
+      "type": "object",
+      "maxProperties": 16,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]{0,31}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "pattern": "^script\\.[a-z0-9_]{1,100}$"
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9 ,()'&.!?-]*$"
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9 ,()'&.!?-]*$"
+          }
+        },
+        "required": [
+          "entity_id",
+          "label",
+          "description"
+        ]
+      },
+      "default": {}
+    }
+  },
+  "required": [
+    "base_url",
+    "token_file"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:vector-puck:homeassistant",
+  "title": "Optional Home Assistant allowlist",
+  "description": "The runtime validator additionally enforces unique target aliases/entities, finite numbers, cross-field bounds, private IPv4 validity, and at least one target."
+}

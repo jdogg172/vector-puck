@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PATTERNS = {
     "credential": re.compile(r"sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"),
     "private_key": re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    "jwt": re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}"),
     "operator_path": re.compile(r"/(?:home|Users)/[A-Za-z0-9_.-]+/"),
     "household_marker": re.compile("wopr" + "net|Lean" + "der|Moon" + "fin", re.I),
     "coordinates": re.compile(r'''["'](?:latitude|longitude|street_address)["']\s*:\s*(?:[-0-9]|["'])'''),
@@ -25,7 +26,7 @@ def inspect(relative: str, data: bytes) -> list[str]:
     if path.suffix.lower() in BLOCKED_SUFFIXES or any(
         part in {"private", "secrets", "firmware", "toolchain", "models", "state", ".git"}
         for part in path.parts
-    ) or path.name in {"local.json", ".env"}:
+    ) or path.name.startswith(("local.json", "homeassistant.local.json")) or path.name == ".env":
         reasons.append("prohibited_artifact")
     if len(data) > 1_000_000 or b"\x00" in data:
         reasons.append("binary_or_oversized")

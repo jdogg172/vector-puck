@@ -29,7 +29,8 @@ class Config:
     hourly_requests: int = 30
     daily_requests: int = 100
     working_sound: bool = True
-    experimental_spoken_stop: bool = False
+    experimental_spoken_stop: bool = True
+    home_assistant_file: str = ""
 
     def __post_init__(self):
         if self.hardware != "echo-dot2-rs03qr-biscuit":
@@ -59,8 +60,12 @@ class Config:
         for name in ("vosk_model", "whisper_model", "key_file"):
             if not isinstance(getattr(self, name), str) or not Path(getattr(self, name)).is_absolute():
                 raise ValueError(f"{name} must be an absolute path")
-        if type(self.working_sound) is not bool or self.experimental_spoken_stop is not False:
-            raise ValueError("Spoken interruption is not enabled in this portable starter")
+        if any(type(getattr(self, name)) is not bool
+               for name in ("working_sound", "experimental_spoken_stop")):
+            raise ValueError("Voice options must be booleans")
+        if (not isinstance(self.home_assistant_file, str)
+                or (self.home_assistant_file and not Path(self.home_assistant_file).is_absolute())):
+            raise ValueError("home_assistant_file must be empty or an absolute path")
 
     @classmethod
     def load(cls, path: Path) -> Config:

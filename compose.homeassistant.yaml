@@ -1,0 +1,10 @@
+# Optional extension; use together with compose.yaml after running setup_home.py.
+services:
+  vector:
+    secrets:
+      - homeassistant_token
+    volumes:
+      - ./config/homeassistant.local.json:/config/homeassistant.local.json:ro
+secrets:
+  homeassistant_token:
+    file: "${HOME_ASSISTANT_TOKEN_FILE:?Run scripts/setup_home.py with an external private token file}"

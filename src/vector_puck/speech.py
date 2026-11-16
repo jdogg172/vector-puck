@@ -47,6 +47,11 @@ class Speech:
         self.stable = self.stable + 1 if self.config.wake_phrase in words else 0
         return self.stable >= 2
 
+    def interrupt_detector(self):
+        from .spoken_stop import stop_phrases
+        return self.recognizer(self.vosk, 16000, json.dumps(
+            stop_phrases(self.config.wake_phrase) + ["[unk]"]))
+
     def endpoint_ready(self, pcm, seconds):
         ended = self.endpoint.AcceptWaveform(pcm)
         if ended:

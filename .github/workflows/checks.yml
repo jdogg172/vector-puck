@@ -16,7 +16,7 @@ jobs:
       - name: Test image without network or API credentials
         run: >-
           docker run --rm --network none --read-only
-          --tmpfs /tmp:rw,nosuid,size=64m
+          --tmpfs /tmp:rw,noexec,nosuid,size=64m
           --cap-drop ALL --security-opt no-new-privileges:true
           -v "$PWD:/repo:ro" -w /repo --entrypoint python
           vector-puck:ci -m unittest discover -s tests -p 'test_*.py' -v

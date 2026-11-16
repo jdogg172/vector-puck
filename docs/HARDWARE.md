@@ -52,4 +52,4 @@ That removes only the override if none existed before, allowing the pre-existing
 
 `patches/wyoming-vector-interrupt.patch` changes three upstream source files. It fixes remote-wake continuation, reports controls version 2, carries physical mute/cancel events, keeps the microphone stream available for a separate stop recognizer, and flushes queued output on cancellation. A `vector-stop` control message also queues a short stock confirmation earcon when stopping active unmuted output. No stock sound recording is distributed.
 
-The portable Python controller intentionally does not send `vector-listen` or run a spoken-stop recognizer. Those hooks support further development; their presence does not make that feature enabled.
+Since version 0.2 the portable Python controller sends `vector-listen` and runs an experimental local spoken-stop recognizer when `experimental_spoken_stop` is true. The independent physical Action and microphone-mute paths remain available. See [spoken-stop behavior](SPOKEN_STOP.md) and perform the required physical acceptance tests after installation.

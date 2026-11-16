@@ -1,0 +1,39 @@
+{
+  "base_url": "http://192.0.2.20:8123",
+  "token_file": "/run/secrets/homeassistant_token",
+  "mode": "dry_run",
+  "media_players": {
+    "audio": {
+      "entity_id": "media_player.example_audio",
+      "label": "Audio",
+      "max_volume": 0.55,
+      "volume_step": 0.05,
+      "sources": {
+        "tv": "TV",
+        "music": "Music"
+      }
+    }
+  },
+  "thermostats": {
+    "climate_zone": {
+      "entity_id": "climate.example_zone",
+      "label": "Climate zone",
+      "unit": "F",
+      "minimum": 55,
+      "maximum": 85,
+      "max_delta": 3
+    }
+  },
+  "tv_actions": {
+    "dashboard": {
+      "entity_id": "script.example_open_dashboard",
+      "label": "Dashboard",
+      "description": "Open the owner configured TV dashboard"
+    },
+    "video_app": {
+      "entity_id": "script.example_open_video_app",
+      "label": "Video app",
+      "description": "Open the owner configured TV video app"
+    }
+  }
+}

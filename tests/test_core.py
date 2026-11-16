@@ -97,14 +97,16 @@ class ConfigAndStateTests(unittest.TestCase):
         self.assertEqual(config.conversation_model, "gpt-6-astra")
         self.assertEqual(config.voice_model, "gpt-realtime-2.1-mini")
         self.assertEqual(config.voice, "cedar")
-        self.assertFalse(config.experimental_spoken_stop)
+        self.assertTrue(config.experimental_spoken_stop)
+        self.assertEqual(config.home_assistant_file, "")
 
     def test_reject_invalid_config(self):
         for kwargs in [{"hardware": "echo-dot3"}, {"puck_host": "8.8.8.8"},
                        {"puck_host": "remote.example"}, {"puck_host": "239.1.1.1"},
                        {"followup_seconds": 16}, {"followup_turns": 6},
                        {"cpu_threads": True}, {"key_file": "relative"},
-                       {"experimental_spoken_stop": True}, {"working_sound": 1},
+                       {"experimental_spoken_stop": "yes"}, {"working_sound": 1},
+                       {"home_assistant_file": "relative"},
                        {"voice_model": "model?key=leak"}]:
             with self.subTest(kwargs=kwargs), self.assertRaises((ValueError, TypeError)):
                 Config(**kwargs)
@@ -384,7 +386,8 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
                 return seconds >= 1.2
             def speech_present(self, pcm):
                 return True
-        config = replace(Config(), puck_host="127.0.0.1", working_sound=False)
+        config = replace(Config(), puck_host="127.0.0.1", working_sound=False,
+                         experimental_spoken_stop=False)
         stop, complete = asyncio.Event(), asyncio.Event()
         peer_errors = []
         calls = []
@@ -443,6 +446,13 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ScriptTests(unittest.TestCase):
+    def test_public_scan_rejects_ha_tokens_and_local_mapping_artifacts(self):
+        scanner = load_script("scan_public")
+        synthetic = "eyJ" + "a" * 12 + "." + "b" * 12 + "." + "c" * 20
+        self.assertIn("jwt", scanner.inspect("config.json", synthetic.encode()))
+        for path in ("config/homeassistant.local.json", "config/local.json.backup"):
+            self.assertIn("prohibited_artifact", scanner.inspect(path, b"{}"))
+
     def test_scan_detects_realistic_leaks_but_not_documentation_addresses(self):
         scanner = load_script("scan_public")
         for value in ["sk-" + "x" * 35, "/home/" + "operator/private/config.json",

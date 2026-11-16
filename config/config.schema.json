@@ -110,8 +110,13 @@
     },
     "experimental_spoken_stop": {
       "type": "boolean",
-      "default": false,
-      "const": false
+      "default": true,
+      "description": "Local addressed-stop listener during working tune and speech; physical mute and Action remain independent."
+    },
+    "home_assistant_file": {
+      "type": "string",
+      "default": "",
+      "description": "Empty disables home tools; otherwise absolute path to explicit Home Assistant mapping."
     }
   }
 }
