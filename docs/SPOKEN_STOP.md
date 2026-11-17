@@ -19,3 +19,6 @@ New configurations set `experimental_spoken_stop` to `true`. If upgrading a loca
 Health includes `spoken_stop`, `interrupt_worker_running`, `interrupt_listening` and numeric `interrupt_checks`. It contains no audio or recognized interruption text. If an enabled stop worker fails, the controller closes the satellite session and reconnects rather than reporting a healthy session without interruption support.
 
 On your own hardware, request a long answer, wait until the voice actually starts, then say the stop phrase from your normal seat. Confirm speech ends and the tone is audible. Repeat during the waiting tune, then verify Action and red microphone mute. A passing synthetic test or health check is not this physical acceptance test.
+
+
+With optional household mode enabled, addressed “Hey Vector, hang up” and “Hey Vector, end the call” also use this local stop path. Action, physical mute or confirmed addressed stop ends the current room call and closes microphone forwarding. A ringing alarm accepts “alarm off” through the normal request path when unmuted; native Action dismissal remains available without cloud access.

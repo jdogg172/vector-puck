@@ -78,3 +78,31 @@ Version 0.2's experimental spoken-stop worker confirms addressed commands locall
 ## Contributor boundaries
 
 Keep hardware ports, firmware assumptions, and library expectations explicit. Do not bundle stock binaries or firmware. Keep new features optional and avoid hidden cloud uploads. Add behavioral tests for cancellation and follow-up state transitions; do not replace real acceptance with mocked success claims.
+
+## Version 0.3 validation — 2026-11-17
+
+| Check | Observed result |
+|---|---|
+| Public controller image | Python 3.12 image built; `pip check` found no broken requirements |
+| Full package suite | 134 tests passed in the image with networking disabled, read-only root/repository, dropped capabilities and no-exec temporary storage; no skipped tests |
+| Multi-room integration | Two real Python session loops with synthetic peers elected one responder and committed one shared shopping change; both rooms read the same saved state |
+| Persistent stores | Shared-list restart/concurrency, task delivery leases, relative/weekday alarms, repeated snooze, cancellation and stale native dismissal regression passed |
+| Incoming calls | Synthetic PCM verified repeated local ringing, physical-mute/busy gates, cancellation when answered, bounded amplitude and no microphone bridge before answer |
+| Actual native C program | Host-built daemon passed reply/stop/queue-flush regression; isolated radar daemon with synthetic input/latch passed mute/race/reconnect checks plus native alarm dismissal persistence and indicator messages |
+| ARM builds | Updated source patch applied to pinned upstream; biscuit and radar ARM programs compiled with model-specific ABI stubs and verified NDK r21e |
+| Installation | Disposable fake-ADB tests passed for model/build rejection, both supported models, checksum failure, previous-override/config restoration and incomplete-recovery reporting |
+| Generated Compose | Two services, separate state, same private household bind mount, matching numeric user, read-only root and dropped capabilities verified |
+| Publication | Privacy scan, Gitleaks source-snapshot scan, lint, shell syntax and whitespace checks passed; final staged/history scan is performed before merge |
+| Real household/acoustic acceptance | Existing operator device use is separate from this portable package. Incoming-call audibility, two-way call acoustics, overlapping-room response arbitration and alarm/snooze/off physical acceptance remain required on each installation |
+
+The stale-dismissal regression first failed with the previous alarm IDs, then passed after fresh occurrence IDs were added for recurrence, snooze and same-name reset. Temporary databases and synthetic audio were used. Public-package checks did not use personal API keys, existing household device credentials or microphone recordings.
+
+Run portable software checks with `make check`. The standalone native harnesses require the actual patched upstream host build and host development libraries. The mute/alarm harnesses require Linux user/network namespaces, `ip`, and `bubblewrap`; build the host daemon with `DEVICE=radar` for its simulated privacy latch:
+
+```bash
+make -C .hardware/echo-dot-assist DEVICE=radar build/hassmic-host
+python3 tests/native_mute_regression.py .hardware/echo-dot-assist/build/hassmic-host
+python3 tests/native_alarm_regression.py .hardware/echo-dot-assist/build/hassmic-host
+```
+
+These harnesses isolate synthetic audio/input from physical devices. They do not replace the operator acceptance steps above or the additional [household acceptance checks](HOUSEHOLD.md#acceptance-and-rollback).

@@ -1,3 +1,18 @@
+diff --git a/src/hassmic/audio_file.c b/src/hassmic/audio_file.c
+index 01b0b10..b86d6ee 100644
+--- a/src/hassmic/audio_file.c
++++ b/src/hassmic/audio_file.c
+@@ -239,7 +239,9 @@ void vol_write(enum vol which, int v)
+
+ /* No front end on the PC.  HASSMIC_FAKE_AFE=<ms>:<voice>:<ambient> plays one that answers the wake word's energies
+  * after <ms> (an Echo Show 5's took 240 and 380 ms, issue #77), for SIGUSR1's wake word too (wake_none.c) */
+-void afe_listening(int on) { (void)on; }
++void afe_listening(int on) {
++    if (getenv("HASSMIC_FAKE_AFE")) fprintf(stderr, "front end: listening=%d\n", on);
++}
+ void afe_stream_stopped(void) { if (getenv("HASSMIC_FAKE_AFE")) fprintf(stderr, "front end: stream stopped\n"); }
+ int  afe_arbitration(long ts, long te, char *json, size_t n)
+ {
 diff --git a/src/hassmic/core.h b/src/hassmic/core.h
 index 79e8be5..9dd4e9b 100644
 --- a/src/hassmic/core.h
@@ -11,23 +26,47 @@ index 79e8be5..9dd4e9b 100644
  int  core_eq(int band);                          /* speaker equalizer, 0 bass / 1 mid / 2 treble: -6..+6 dB */
  void core_set_eq(int band, int db);              /* the mixer keeps it across reboots */
 diff --git a/src/hassmic/main.c b/src/hassmic/main.c
-index a89aef2..59bad45 100644
+index a89aef2..e542f92 100644
 --- a/src/hassmic/main.c
 +++ b/src/hassmic/main.c
-@@ -1071,7 +1071,11 @@ static void mute_update(int was, int sound)   /* lock held: ring, sound + Home A
+@@ -757,6 +757,8 @@ static int wake_fails;                              /* lock held: wake word runs
+ static int follow_up;                               /* lock held: the pipeline now starting is a follow-up to a question */
+ static void pipeline_start(uint64_t from)    /* from: where the wake word that starts it ended, 0: not a wake word */
+ {
++    /* All starts/restarts hold core_lock, including remote run-satellite and playback completion. */
++    if (proto == &proto_wyoming && core_muted()) return;
+     run_over = 0; wake_wait = 0;
+     quiet_abort = 0;
+     mic_fresh = 1;
+@@ -827,7 +829,8 @@ void core_remote_wake(void)
+ static void wake_listen(void)
+ {
+     if (core_local_wake || !run_over || state != SPEAKING || atomic_load(&streaming) || atomic_load(&flush_playback) ||
+-        wake_fails >= WAKE_FAILS_MAX || !connected || !satellite_running) return;
++        wake_fails >= WAKE_FAILS_MAX || !connected || !satellite_running ||
++        (proto == &proto_wyoming && core_muted())) return;
+     pipeline_start(0);
+     wake_wait = 1;
+ }
+@@ -1071,9 +1074,16 @@ static void mute_update(int was, int sound)   /* lock held: ring, sound + Home A
      int now = core_muted();
      if (now == was) return;
      if (sound) sound_request(now ? SND_MICS_OFF : SND_MICS_ON);
 -    if (now) { if (state == LISTENING) core_pipeline_finish(); led("-s", "mics-off_on"); }
 +    if (now) {
 +        if (proto == &proto_wyoming && (state == SPEAKING || state == THINKING)) core_vector_stop();
-+        else if (state == LISTENING) core_pipeline_finish();
++        else if (state == LISTENING || (proto == &proto_wyoming && atomic_load(&streaming))) core_pipeline_finish();
 +        led("-s", "mics-off_on");
 +    }
      else { led("-u", "mics-off_on"); led("-s", "mics-off_end"); }
      if (connected && proto->mute_changed) proto->mute_changed(now);
++    /* Tell the server first; if Q_STOP still owns the reply, its completion resumes instead. */
++    if (!now && proto == &proto_wyoming && !core_local_wake && connected && satellite_running &&
++        state == IDLE && !atomic_load(&streaming)) pipeline_start(0);
  }
-@@ -2164,6 +2168,13 @@ static void *playback_thread(void *arg)
+
+ int core_soft_mute(int set)
+@@ -2164,6 +2174,13 @@ static void *playback_thread(void *arg)
              atomic_store(&tts_on, 0); playback_hint();
              pthread_mutex_lock(&core_lock);
              atomic_store(&flush_playback, 0);       /* under the lock: a wake word between would cut the next reply */
@@ -41,10 +80,10 @@ index a89aef2..59bad45 100644
              if (proto->played) proto->played();      /* also without a client: modules reset their state here */
              if (wake_cut) wake_cut = 0;              /* cut for Home Assistant's wake word: its run is the request (core_remote_wake) */
              else core_pipeline_finish();
-@@ -2195,6 +2206,23 @@ void core_tts_abandoned(void) { wake_cut = 0; }
+@@ -2195,6 +2212,23 @@ void core_tts_abandoned(void) { wake_cut = 0; }
  int  core_tts_flushing(void) { return atomic_load(&flush_playback); }
  void core_tts_flush(void) { atomic_store(&flush_playback, 1); }
- 
+
 +void core_vector_stop(void)
 +{
 +    if (proto != &proto_wyoming || (state != SPEAKING && state != THINKING)) return;
@@ -65,7 +104,7 @@ index a89aef2..59bad45 100644
  size_t core_tts_queued(void)
  {
      pthread_mutex_lock(&q_lock); size_t n = q_bytes; pthread_mutex_unlock(&q_lock);
-@@ -2686,6 +2714,11 @@ static void on_action(void)
+@@ -2686,6 +2720,11 @@ static void on_action(void)
      if (dropin_running() && dropin_button()) return;    /* a Drop In rang (answered) or ran (ended) */
      pthread_mutex_lock(&core_lock);
      int busy = state == LISTENING || state == THINKING;
@@ -77,19 +116,52 @@ index a89aef2..59bad45 100644
      pthread_mutex_unlock(&core_lock);
      if (!busy && (a2dp_button(0) || (core_sendspin_port && sendspin_button()) || a2dp_button(1))) return;
      atomic_store(&trigger_pending, 2);                  /* 2: touch */
+@@ -3443,7 +3482,7 @@ static void *capture_thread(void *arg)
+             align_ahead();                              /* outside the lock: it takes up to ~0.1 s on an Echo */
+             pthread_mutex_lock(&core_lock);
+             uint64_t at = cap_clock() - n / 2;
+-            if (atomic_load(&streaming) && connected) {
++            if (atomic_load(&streaming) && connected && (proto != &proto_wyoming || !core_muted())) {
+                 if (!replay_from) send_mic(pcm, n / 2, at);
+                 else {                                      /* after the wake word: from its tail's end, this block included */
+                     int64_t from = word_tail_end(replay_from, at + n / 2);
 diff --git a/src/hassmic/proto_wyoming.c b/src/hassmic/proto_wyoming.c
-index a59718d..464ada8 100644
+index a59718d..7f735c6 100644
 --- a/src/hassmic/proto_wyoming.c
 +++ b/src/hassmic/proto_wyoming.c
-@@ -6,6 +6,7 @@
+@@ -3,14 +3,31 @@
+ #include <string.h>
+ #include <sys/socket.h>
+ #include <time.h>
++#include <stdlib.h>
++#include <unistd.h>
  #include "board.h"
  #include "core.h"
  #include "screen.h"
 +#include "sounds.h"
++#include "ring.h"
++#include "statefile.h"
  #include "wyoming.h"
- 
+
  #define TTS_RATE 22050      /* assumed when audio-start carries no rate */
-@@ -23,7 +24,8 @@ static void start(void)
+
+ static int client = -1;
++static char alarm_id[40];
++
++static void dismissal_path(char *out, size_t cap)
++{
++    const char *root = getenv("HASSMIC_STATE");
++    snprintf(out, cap, "%s/last-alarm-dismissed", root ? root : "/data/local/hassmic/state");
++}
++
++static int alarm_id_ok(const char *id)
++{
++    return strlen(id) == 32 && strspn(id, "0123456789abcdef") == 32;
++}
+
+ static void send_event(const char *type, const char *data, const void *payload, size_t len)
+ {
+@@ -23,12 +40,15 @@ static void start(void)
      char data[256];
      snprintf(data, sizeof data,
               "{\"start_stage\":\"%s\",\"end_stage\":\"tts\",\"restart_on_end\":false%s}",
@@ -98,42 +170,100 @@ index a59718d..464ada8 100644
 +             core_state() == SPEAKING ? ",\"vector_barge_in\":true" : "");
      send_event("run-pipeline", data, NULL, 0);
  }
- 
-@@ -37,6 +39,11 @@ static void audio(const void *pcm, size_t len)
+
+ static void audio(const void *pcm, size_t len)
+ {
++    /* core_lock held: cover live/replayed PCM and recheck the hardware latch at each send. */
++    if (core_muted()) return;
+     char data[96]; struct timespec ts;
+     clock_gettime(CLOCK_MONOTONIC, &ts);
+     snprintf(data, sizeof data, "{\"rate\":16000,\"width\":2,\"channels\":1,\"timestamp\":%lld}",
+@@ -37,17 +57,52 @@ static void audio(const void *pcm, size_t len)
  }
- 
+
  static void played(void) { send_event("played", NULL, NULL, 0); }
 +static void cancel(void) { send_event("vector-cancel", NULL, NULL, 0); }
 +static void mute_changed(int muted)
 +{
 +    send_event("vector-mute", muted ? "{\"muted\":true}" : "{\"muted\":false}", NULL, 0);
 +}
- 
++
++static void alarm_changed(void)
++{
++    char names[256];
++    int ringing = core_timers_ringing(names, sizeof names);
++    if (!ringing && alarm_id[0]) {
++        char path[300]; dismissal_path(path, sizeof path);
++        statefile_write(path, 0600, alarm_id, strlen(alarm_id));
++        alarm_id[0] = 0;
++    }
++    send_event("vector-alarm-state", ringing ? "{\"ringing\":true}" : "{\"ringing\":false}", NULL, 0);
++}
++
++/* Status light only: the ring module preserves stock mute/listening/alarm priority. */
++static void indicator(const char *json)
++{
++    char kind[24] = "";
++    wy_json_str(json, "kind", kind, sizeof kind);
++    struct ring_light l = { .brightness = .2f, .color_brightness = 1, .fill = 100, .effect = 1 };
++    if (!strcmp(kind, "message")) { l.on = 1; l.b = 1; l.g = .7f; }
++    else if (!strcmp(kind, "watch")) { l.on = 1; l.r = 1; l.g = .55f; }
++    else if (!strcmp(kind, "warning")) { l.on = 1; l.r = 1; l.g = .08f; }
++    else if (!strcmp(kind, "advisory")) { l.on = 1; l.b = 1; l.g = .15f; }
++    else if (strcmp(kind, "none")) return;
++    ring_light_set(&l, 0);
++}
+
  static void send_info(void)
  {
-@@ -46,8 +53,8 @@ static void send_info(void)
+-    char data[1024];
++    char data[1024], dismissed[40] = "", path[300];
++    dismissal_path(path, sizeof path);
++    FILE *file = fopen(path, "r");
++    if (file) { size_t n = fread(dismissed, 1, 32, file); dismissed[n] = 0; fclose(file); }
++    if (!alarm_id_ok(dismissed)) dismissed[0] = 0;
+     snprintf(data, sizeof data,
+              "{\"asr\":[],\"tts\":[],\"handle\":[],\"intent\":[],\"wake\":[],\"mic\":[],\"snd\":[],"
               "\"satellite\":{\"name\":\"%s\",\"attribution\":{\"name\":\"hassmic\",\"url\":\"\"},"
               "\"installed\":true,\"description\":\"%s with Amazon audio front end\",\"version\":\"" VERSION "\","
               "\"area\":null,\"has_vad\":false,\"active_wake_words\":[%s],\"max_active_wake_words\":1,"
 -             "\"supports_trigger\":true}}",
 -             core_name, board.model, core_local_wake ? "\"alexa\"" : "");
-+             "\"supports_trigger\":true,\"vector_controls\":2,\"vector_barge_in\":true,\"vector_muted\":%s}}",
-+             core_name, board.model, core_local_wake ? "\"alexa\"" : "", core_muted() ? "true" : "false");
++             "\"supports_trigger\":true,\"vector_controls\":2,\"vector_barge_in\":true,\"vector_indicator\":true,\"vector_alarm\":true,\"vector_alarm_dismissed\":\"%s\",\"vector_muted\":%s}}",
++             core_name, board.model, core_local_wake ? "\"alexa\"" : "", dismissed, core_muted() ? "true" : "false");
      send_event("info", data, NULL, 0);
  }
- 
-@@ -61,7 +68,19 @@ static void handle(const struct wy_event *ev)
+
+@@ -59,9 +114,37 @@ static void handle(const struct wy_event *ev)
+     pthread_mutex_lock(&core_lock);
+     if (!strcmp(t, "ping")) send_event("pong", NULL, NULL, 0);
      else if (!strcmp(t, "describe")) send_info();
++    else if (!strcmp(t, "vector-indicator")) indicator(ev->json);
++    else if (!strcmp(t, "vector-alarm")) {
++        char action[16] = "", id[40] = "", name[64] = "";
++        wy_json_str(ev->json, "action", action, sizeof action);
++        wy_json_str(ev->json, "id", id, sizeof id);
++        wy_json_str(ev->json, "name", name, sizeof name);
++        if (!strcmp(action, "start") && alarm_id_ok(id) && name[0]) {
++            char path[300]; dismissal_path(path, sizeof path); unlink(path);
++            snprintf(alarm_id, sizeof alarm_id, "%s", id);
++            core_timer_ring(0); core_timer_sound(TIMER_SOUND_ALARM);
++            core_timer_finished(id, name, 0);
++        } else if (!strcmp(action, "stop") && alarm_id_ok(id)) core_timer_cancelled(id);
++    }
      else if (!strcmp(t, "run-satellite")) { fprintf(stderr, "satellite: running\n"); core_link(1, 1); }
      else if (!strcmp(t, "pause-satellite")) core_link_pause();
 -    else if (!strcmp(t, "detection")) core_set_state(LISTENING);
 +    else if (!strcmp(t, "vector-listen")) core_run_over();
 +    else if (!strcmp(t, "vector-stop")) {
-+        int acknowledge = !core_muted() && (core_state() == SPEAKING || core_state() == THINKING);
++        char names[256];
++        long preserve_alarm = 0; wy_json_int(ev->json, "preserve_alarm", &preserve_alarm);
++        int acknowledge = preserve_alarm != 1 && !core_muted() && (core_state() == SPEAKING || core_state() == THINKING || core_timers_ringing(names, sizeof names));
 +        core_vector_stop();
++        if (preserve_alarm != 1) core_alarm_stop("Vector stop");
 +        if (acknowledge) core_sound_preview(SND_VOLUME);
 +    }
-+    else if (!strcmp(t, "detection")) {
++    else if (!strcmp(t, "detection") && !core_muted()) {
 +        /* A server wake must also hold the talker's beam and AFE utterance mode,
 +         * as ESPHome's EV_WAKE_END does. A ring-only state change lets the
 +         * cancellers adapt the command away after the first second or two. */
@@ -143,13 +273,13 @@ index a59718d..464ada8 100644
      else if (!strcmp(t, "voice-stopped") || !strcmp(t, "transcript")) {
          if (!strcmp(t, "transcript")) {
              char text[256] = "";
-@@ -111,4 +130,8 @@ static void print_mdns(void)
+@@ -111,4 +194,8 @@ static void print_mdns(void)
             "  <service><type>_wyoming._tcp</type><port>%d</port></service>\n</service-group>\n", core_name, core_port);
  }
- 
+
 -const struct proto proto_wyoming = { "wyoming", 16700, 0, serve, start, audio, NULL, NULL, played, NULL, NULL, print_mdns, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
 +const struct proto proto_wyoming = {
 +    .id = "wyoming", .port = 16700, .threaded = 0, .serve = serve,
 +    .start = start, .audio = audio, .stop = cancel, .cancel = cancel,
-+    .played = played, .mute_changed = mute_changed, .print_mdns = print_mdns
++    .played = played, .mute_changed = mute_changed, .timers_changed = alarm_changed, .print_mdns = print_mdns
 +};

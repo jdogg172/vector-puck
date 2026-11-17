@@ -31,10 +31,11 @@ class Config:
     working_sound: bool = True
     experimental_spoken_stop: bool = True
     home_assistant_file: str = ""
+    household_file: str = ""
 
     def __post_init__(self):
-        if self.hardware != "echo-dot2-rs03qr-biscuit":
-            raise ValueError("Only Echo Dot 2 RS03QR/BISCUIT is supported")
+        if self.hardware not in {"echo-dot2-rs03qr-biscuit", "echo2-xc56py-radar"}:
+            raise ValueError("Use a documented biscuit or radar satellite")
         if not isinstance(self.puck_host, str):
             raise ValueError("puck_host must be an IPv4 string")
         ip = ipaddress.ip_address(self.puck_host)
@@ -66,6 +67,9 @@ class Config:
         if (not isinstance(self.home_assistant_file, str)
                 or (self.home_assistant_file and not Path(self.home_assistant_file).is_absolute())):
             raise ValueError("home_assistant_file must be empty or an absolute path")
+        if (not isinstance(self.household_file, str)
+                or (self.household_file and not Path(self.household_file).is_absolute())):
+            raise ValueError("household_file must be empty or an absolute path")
 
     @classmethod
     def load(cls, path: Path) -> Config:

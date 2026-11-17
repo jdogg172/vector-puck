@@ -22,7 +22,7 @@ def addresses(wake_phrase: str) -> list[str]:
 
 def stop_phrases(wake_phrase: str) -> list[str]:
     return [f"{name} {command}" for name in addresses(wake_phrase)
-            for command in ("stop", "cancel", "be quiet")]
+            for command in ("stop", "cancel", "be quiet", "hang up", "end call")]
 
 
 def interrupt_requested(text: str, wake_phrase: str) -> bool:
@@ -32,7 +32,7 @@ def interrupt_requested(text: str, wake_phrase: str) -> bool:
                        for value in addresses(wake_phrase))
     return bool(re.search(
         r"\b(?:" + address + r")[ ,.!?]+(?:(?:can|could|would) you )?(?:please )?"
-        r"(?:stop|cancel|quiet|be quiet|enough|that's enough|shut up|hold on|wait|pause)\b",
+        r"(?:stop|cancel|quiet|be quiet|enough|that's enough|shut up|hold on|wait|pause|hang up|end (?:the )?call)\b",
         text, re.I))
 
 

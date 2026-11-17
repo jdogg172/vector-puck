@@ -26,3 +26,6 @@ secrets/
 *.img
 *.zip
 *.apk
+
+config/*.local.json*
+compose.household.local.json

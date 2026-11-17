@@ -35,3 +35,10 @@ The default assistant has no device tools. The optional integration exposes one 
 ## Contributions and publication
 
 Run `python3 scripts/scan_public.py` and review `git diff --cached` before publishing. The scanner checks the Git candidate set for likely secrets, private addresses/paths, and prohibited artifacts without printing matched data. It is heuristic and does not cover ignored files or existing Git history. Start new public history from reviewed source; do not copy private deployment history.
+
+
+## Optional household mode
+
+Enabling `household_file` shares room registration, response leases, shopping items, announcement text, call state and saved feature ideas through one private local directory. Room-local schedules and reminders remain in each controller's state. Room names are not speaker identity. Accepted call PCM uses private Unix datagrams, sequence/freshness checks and no recording or cloud conversation upload. Only a recipient's explicit answer opens a call. Mute or Action ends forwarding.
+
+Optional caller prompts are static synthesized speech stored under the private shared directory, not microphone captures. Spoken notifications require Cedar; the incoming ringtone and already-started native alarm do not. Schedules and shopping contents are not added to unrelated model requests; current room/time and the registered room names are supplied for household routing. Feature-idea details are saved locally and never automatically executed. The limited `public/status.json` projection contains feature summaries/status/notes; publish it only if the owner wants those displayed.

@@ -9,6 +9,8 @@ work_dir="$repo_dir/.hardware"
 upstream_dir="$work_dir/echo-dot-assist"
 upstream_commit=8646a4f2f4aeafde2d7aca7359d9eff555a169c0
 ndk_sha=ad7ce5467e18d40050dc51b8e7affc3e635c85bd8c59be62de32352328ed467e
+device=${VECTOR_DEVICE:-biscuit}
+case "$device" in biscuit|radar) ;; *) echo 'VECTOR_DEVICE must be biscuit or radar.' >&2; exit 2 ;; esac
 download_ndk=0
 if [[ ${1:-} == --download-ndk && $# == 1 ]]; then
   download_ndk=1
@@ -27,7 +29,10 @@ fi
 if [[ -f "$work_dir/patched-commit" ]]; then
   [[ $(cat "$work_dir/patched-commit") == "$upstream_commit" ]] || { echo 'Unexpected prior source marker.' >&2; exit 1; }
   [[ $(git -C "$upstream_dir" rev-parse HEAD) == "$upstream_commit" ]] || exit 1
-  git -C "$upstream_dir" apply --reverse --check "$repo_dir/patches/wyoming-vector-interrupt.patch"
+  git -C "$upstream_dir" apply --reverse --check "$repo_dir/patches/wyoming-vector-interrupt.patch" || {
+    echo 'Cached source uses a different patch. Preserve/move .hardware/echo-dot-assist and .hardware/patched-commit, then rebuild.' >&2
+    exit 1
+  }
 else
   [[ -z $(git -C "$upstream_dir" status --porcelain) ]] || { echo 'Preserve changes in the upstream checkout before continuing.' >&2; exit 1; }
   git -C "$upstream_dir" checkout --detach "$upstream_commit"
@@ -52,6 +57,6 @@ if [[ ! -x "$ndk_dir/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-andr
   ndk_dir="$work_dir/android-ndk-r21e"
 fi
 grep -q 'Pkg.Revision = 21.4.7075529' "$ndk_dir/source.properties" || { echo 'Use Android NDK r21e (21.4.7075529).' >&2; exit 1; }
-make -C "$upstream_dir" DEVICE=biscuit STUBS=1 NDK="$ndk_dir" build/biscuit/hassmic
-sha256sum "$upstream_dir/build/biscuit/hassmic"
+make -C "$upstream_dir" DEVICE="$device" STUBS=1 NDK="$ndk_dir" "build/$device/hassmic"
+sha256sum "$upstream_dir/build/$device/hassmic"
 echo 'Built the override. No USB device, firmware, bootloader, or system partition was accessed.'

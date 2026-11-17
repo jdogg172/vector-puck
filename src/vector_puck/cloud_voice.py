@@ -127,11 +127,12 @@ class Quota:
 
 
 class Dialogue:
-    def __init__(self, config, key, state, home=None):
+    def __init__(self, config, key, state, home=None, household=None):
         self.config, self.key = config, key
         self.quota = Quota(config, state)
         self.history, self.updated = [], 0.0
         self.home = home
+        self.household = household
 
     def clear(self):
         self.history.clear()
@@ -145,7 +146,13 @@ class Dialogue:
         self.expire()
         guard()
         self.quota.reserve()
-        result = await answer(self.config, self.key, text, self.history, guard, home=self.home)
+        direct = self.household.fast_path(text) if self.household else None
+        if direct:
+            name, args = direct
+            result = (await self.household.execute(name, args, guard, utterance=text))["message"]
+        else:
+            result = await answer(self.config, self.key, text, self.history, guard,
+                                  home=self.home, household=self.household)
         guard()
         audio = await cedar(self.config, self.key, result, guard)
         guard()

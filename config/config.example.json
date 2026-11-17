@@ -19,5 +19,6 @@
   "daily_requests": 100,
   "working_sound": true,
   "experimental_spoken_stop": true,
-  "home_assistant_file": ""
+  "home_assistant_file": "",
+  "household_file": ""
 }

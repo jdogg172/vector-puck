@@ -1,0 +1,21 @@
+{
+  "root": "/household",
+  "room": "office",
+  "rooms": [
+    {
+      "id": "office",
+      "name": "Office",
+      "aliases": [
+        "office speaker"
+      ]
+    },
+    {
+      "id": "kitchen",
+      "name": "Kitchen",
+      "aliases": [
+        "kitchen speaker"
+      ]
+    }
+  ],
+  "timezone": "UTC"
+}
