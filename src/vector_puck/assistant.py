@@ -29,7 +29,7 @@ class CloudError(RuntimeError):
     """Fixed safe diagnostic codes only; never remote bodies or user text."""
 
 
-def request_body(config, text: str, history: list[tuple[str, str]], home=None) -> dict:
+def request_body(config, text: str, history: list[tuple[str, str]], home=None, household=None) -> dict:
     if not isinstance(text, str) or not 1 <= len(text) <= config.max_request_chars:
         raise ValueError("Invalid recognized request")
     body = {
@@ -42,6 +42,18 @@ def request_body(config, text: str, history: list[tuple[str, str]], home=None) -
         "tools": home.tools() if home else [],
     }
     if home:
+        body["parallel_tool_calls"] = False
+    if household:
+        body["instructions"] = HOME_INSTRUCTIONS + """
+Additional explicitly configured household tools are available for timers, reminders,
+shared shopping, room calls, announcements, and saving feature ideas for owner review.
+Choose at most ONE tool by meaning. Never claim queued announcements were heard.
+Do not infer speaker identity from a room. No drop-in: calls require recipient acceptance.
+Use local_time for dates, the owner's timezone for reminders, and minutes for relative
+alarms such as 'in two minutes'. Ask about ambiguous AM/PM. Never execute quoted,
+negated or hypothetical instructions. Features are queued ideas, never auto-installed.
+Configured room/time context: """ + json.dumps(household.context(), ensure_ascii=True)
+        body["tools"].extend(household.tools())
         body["parallel_tool_calls"] = False
     return body
 
@@ -61,7 +73,8 @@ def unpack(data: dict) -> str:
     return text
 
 
-async def answer(config, key: str, text: str, history, guard, client_factory=None, home=None):
+async def answer(config, key: str, text: str, history, guard, client_factory=None, home=None,
+                 household=None):
     if client_factory is None:
         import httpx
         client_factory = httpx.AsyncClient
@@ -72,7 +85,7 @@ async def answer(config, key: str, text: str, history, guard, client_factory=Non
             async with client.stream(
                 "POST", "https://api.openai.com/v1/responses",
                 headers={"Authorization": "Bearer " + key},
-                json=request_body(config, text, history, home),
+                json=request_body(config, text, history, home, household),
             ) as response:
                 if response.status_code != 200:
                     raise CloudError("reasoning_http")
@@ -90,7 +103,10 @@ async def answer(config, key: str, text: str, history, guard, client_factory=Non
         if calls:
             # Validate the complete proposal before executing anything. No loops,
             # parallel writes, model-provided endpoints, or automatic retries.
-            if not home or len(calls) != 1 or calls[0].get("name") != "home_action":
+            executors = {"home_action": home} if home else {}
+            if household:
+                executors.update({t["name"]: household for t in household.tools()})
+            if len(calls) != 1 or calls[0].get("name") not in executors:
                 return "I couldn't validate one supported home request. Nothing was changed."
             try:
                 def unique(entries):
@@ -109,7 +125,8 @@ async def answer(config, key: str, text: str, history, guard, client_factory=Non
             except (ValueError, TypeError):
                 return "I couldn't validate that home request. Nothing was changed."
             guard()
-            result = await home.execute("home_action", args, guard, utterance=text)
+            name = calls[0]["name"]
+            result = await executors[name].execute(name, args, guard, utterance=text)
             guard()
             reply = result.get("message")
             if not isinstance(reply, str) or not 1 <= len(reply) <= 2600:

@@ -343,6 +343,7 @@ class CloudAndCancellationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_pacing_stops_after_epoch_changes(self):
         satellite = SimpleNamespace(gate=Gate(), send=AsyncMock())
+        satellite.guard = satellite.gate.guard
         satellite.gate.muted = False
         def cancel_on_first(*args):
             satellite.gate.cancel()

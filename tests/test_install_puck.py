@@ -149,6 +149,19 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual((backups[0] / "hassmic.conf").read_bytes(), self.old_config)
         self.assertIn("Backup directory:", result.stdout)
 
+    def test_radar_requires_its_own_product_build_and_binary(self):
+        radar = self.repo / ".hardware/echo-dot-assist/build/radar/hassmic"
+        radar.parent.mkdir(parents=True)
+        radar.write_bytes(b"synthetic radar ARM program")
+        before = self.snapshot()
+        result = self.run_installer("--apply", VECTOR_DEVICE="radar")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.snapshot(), before)
+        result = self.run_installer("--apply", VECTOR_DEVICE="radar",
+                                    FAKE_PRODUCT="radar_puffin", FAKE_BUILD="NS6572")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.device / "hassmic").read_bytes(), radar.read_bytes())
+
     def test_checksum_failure_rolls_back_previous_override_and_config(self):
         result = self.run_installer("--apply", FAKE_CHECKSUM_FAILURE="1")
         self.assertNotEqual(result.returncode, 0)

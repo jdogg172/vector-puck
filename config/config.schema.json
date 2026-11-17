@@ -7,8 +7,11 @@
   "properties": {
     "hardware": {
       "type": "string",
-      "default": "echo-dot2-rs03qr-biscuit",
-      "const": "echo-dot2-rs03qr-biscuit"
+      "enum": [
+        "echo-dot2-rs03qr-biscuit",
+        "echo2-xc56py-radar"
+      ],
+      "default": "echo-dot2-rs03qr-biscuit"
     },
     "puck_host": {
       "type": "string",
@@ -117,6 +120,11 @@
       "type": "string",
       "default": "",
       "description": "Empty disables home tools; otherwise absolute path to explicit Home Assistant mapping."
+    },
+    "household_file": {
+      "type": "string",
+      "default": "",
+      "description": "Empty disables household features; otherwise an absolute path to a private same-host rooms configuration."
     }
   }
 }

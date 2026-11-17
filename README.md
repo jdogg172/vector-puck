@@ -1,6 +1,6 @@
 # Vector Puck
 
-Turn a rooted **Echo Dot 2 (RS03QR / biscuit)** into a GPT voice companion with local wake detection and speech recognition, Cedar replies, and short follow-up conversations.
+Turn a rooted **Echo Dot 2 (RS03QR / biscuit)** or **Echo 2 (XC56PY / radar)** into a GPT voice companion with local wake detection and speech recognition, Cedar replies, and short follow-up conversations.
 
 This is a community experiment for hardware owners. The controller and patches are MIT licensed. Rooting is a separate, manual prerequisite and can erase or brick the device. This is not an Amazon or OpenAI product.
 
@@ -13,13 +13,14 @@ This is a community experiment for hardware owners. The controller and patches a
 - Physical microphone mute and Action-button cancellation, including queued speaker audio.
 - Experimental local spoken stop during the working tune and Cedar replies, with a short confirmation tone.
 - Optional, allowlisted Home Assistant audio, thermostat, and TV-script controls, starting in dry-run mode.
+- Optional shared shopping lists, named timers/reminders, persistent alarms, single-responder coordination, accepted room calls and announcements.
 - A restricted Docker controller, checksum-pinned model downloads, tests, and rollback instructions.
 
-**Version 0.2 adds spoken stop and optional home control.** Home control remains disabled until an owner configures it, and the controller never exposes generic shell or HA-service tools. Web search, calendars, live weather sources, and household deployment settings are not included. The public package has offline software validation; it still needs independent hardware acceptance. See [validation](docs/VALIDATION.md).
+**Version 0.3 adds optional household mode and the full-size Echo 2.** Start with [the household guide](docs/HOUSEHOLD.md) for two or more rooms, alarms, calling and shared lists. [The changelog](CHANGELOG.md) records features and fixes. Home control remains disabled until an owner configures it; generic shell and HA-service tools are never exposed. Web search, calendars, live weather sources, and personal deployment settings are not included. Software validation is separate from real hardware acceptance; see [validation](docs/VALIDATION.md).
 
 ## Requirements
 
-- Echo Dot **second generation**, model **RS03QR**, already unlocked, rooted, and configured with the pinned [upstream satellite](docs/HARDWARE.md). Other Echo generations and Echo Show devices are unsupported here.
+- Echo Dot **second generation**, model **RS03QR**, already unlocked, rooted, and configured with the pinned [upstream satellite](docs/HARDWARE.md). Echo 2 XC56PY/radar uses the additional instructions in the household guide; other Echo generations and Echo Shows are unsupported here.
 - A data-capable micro-USB cable. USB is needed for setup and updating; normal operation uses Wi-Fi and power.
 - Linux x86_64 for the documented build/install path, with Git, Make, `curl`, `unzip`, `sha256sum`, Android `adb`, Python 3.12+, Docker Engine, and Docker Compose v2.
 - A Linux Docker host with at least 4 GB RAM available and four CPU threads recommended. CPU recognition may be slower than a GPU-equipped system. The container has a 2 GB memory limit.
@@ -27,7 +28,7 @@ This is a community experiment for hardware owners. The controller and patches a
 
 Only one Wyoming controller should connect to the puck. Disconnect an existing Home Assistant Wyoming integration before using this controller.
 
-Looking for inexpensive room hardware? See [device choices and exact model numbers](docs/DEVICE_CHOICES.md). Upstream support for another model does not establish compatibility with this repository's Dot 2 patch and installer.
+Looking for inexpensive room hardware? See [device choices and exact model numbers](docs/DEVICE_CHOICES.md). Only the exact biscuit/radar models and pinned builds described here are supported; upstream support for another model does not establish compatibility.
 
 ## 1. Prepare the hardware
 

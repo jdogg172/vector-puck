@@ -3,7 +3,13 @@
 set -euo pipefail
 umask 077
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-binary="$repo_dir/.hardware/echo-dot-assist/build/biscuit/hassmic"
+device=${VECTOR_DEVICE:-biscuit}
+case "$device" in
+  biscuit) product=biscuit_puffin; build=NS65741 ;;
+  radar) product=radar_puffin; build=NS6572 ;;
+  *) echo 'VECTOR_DEVICE must be biscuit or radar.' >&2; exit 2 ;;
+esac
+binary="$repo_dir/.hardware/echo-dot-assist/build/$device/hassmic"
 apply=0
 case ${1:---check} in
   --check) ;;
@@ -16,8 +22,8 @@ mapfile -t devices < <(adb devices | awk 'NR>1 && $2=="device" && $1 !~ /:/ {pri
 [[ ${#devices[@]} == 1 ]] || { echo 'Connect exactly one authorized physical USB device.' >&2; exit 1; }
 adb_cmd=(adb -s "${devices[0]}")
 read_prop() { "${adb_cmd[@]}" shell getprop "$1" | tr -d '\r'; }
-[[ $(read_prop ro.product.device) == biscuit_puffin ]] || { echo 'Refusing a device other than Echo Dot 2 biscuit_puffin.' >&2; exit 1; }
-[[ $(read_prop ro.build.display.id) == NS65741 ]] || { echo 'Install the documented upstream pinned firmware first.' >&2; exit 1; }
+[[ $(read_prop ro.product.device) == "$product" ]] || { echo 'Connected model does not match VECTOR_DEVICE; refusing it.' >&2; exit 1; }
+[[ $(read_prop ro.build.display.id) == "$build" ]] || { echo 'Install the documented upstream pinned firmware first.' >&2; exit 1; }
 [[ $("${adb_cmd[@]}" shell id -u | tr -d '\r') == 0 ]] || { echo 'A working root ADB session is required.' >&2; exit 1; }
 "${adb_cmd[@]}" shell 'test -f /system/etc/init/hassmic.rc && test -f /data/local/hassmic/hassmic.conf'
 echo 'Verified supported model, pinned build, root, and existing upstream installation.'

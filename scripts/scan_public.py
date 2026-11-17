@@ -17,7 +17,7 @@ PATTERNS = {
     "household_marker": re.compile("wopr" + "net|Lean" + "der|Moon" + "fin", re.I),
     "coordinates": re.compile(r'''["'](?:latitude|longitude|street_address)["']\s*:\s*(?:[-0-9]|["'])'''),
 }
-BLOCKED_SUFFIXES = {".bin", ".img", ".so", ".wav", ".pcm", ".raw", ".mp3", ".apk", ".zip", ".onnx", ".tflite"}
+BLOCKED_SUFFIXES = {".bin", ".img", ".so", ".wav", ".pcm", ".raw", ".mp3", ".apk", ".zip", ".onnx", ".tflite", ".sqlite3", ".sqlite", ".db"}
 
 
 def inspect(relative: str, data: bytes) -> list[str]:
@@ -26,7 +26,7 @@ def inspect(relative: str, data: bytes) -> list[str]:
     if path.suffix.lower() in BLOCKED_SUFFIXES or any(
         part in {"private", "secrets", "firmware", "toolchain", "models", "state", ".git"}
         for part in path.parts
-    ) or path.name.startswith(("local.json", "homeassistant.local.json")) or path.name == ".env":
+    ) or path.name.startswith(("local.json", "homeassistant.local.json")) or ".local.json" in path.name or path.name == ".env":
         reasons.append("prohibited_artifact")
     if len(data) > 1_000_000 or b"\x00" in data:
         reasons.append("binary_or_oversized")
