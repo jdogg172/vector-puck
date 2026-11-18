@@ -680,6 +680,77 @@ class FocusTests(unittest.IsolatedAsyncioTestCase):
                          [{"event": "focus_acquired"}, {"event": "question_handoff"}])
         self.assertEqual(self.wire.count("vector-question"), 1)
 
+    async def test_partial_wake_seeds_free_recognition_with_real_preroll(self):
+        from vector_puck.spoken_stop import wake_audio
+        await self.original_turn()
+        free = Detector()
+        free.AcceptWaveform = Mock(return_value=False)
+        self.speech.recognizer = Mock(return_value=free)
+        self.speech.vosk = object()
+        self.speech.detector.candidate = ""
+        self.mic(frame(53))
+        await until(lambda: self.s.interrupt_checks["max_rms"] > 0)
+        self.speech.detector.candidate = "[unk] hey"
+        self.mic(frame(65))
+        await until(lambda: free.AcceptWaveform.called)
+        self.speech.recognizer.assert_called_once_with(self.speech.vosk, 16000)
+        free.AcceptWaveform.assert_called_once_with(wake_audio(frame(53) + frame(65)))
+        self.assertEqual(self.wire.count("vector-focus"), 0)
+        self.assertEqual(self.wire.count("vector-question"), 0)
+
+    async def test_verifier_survives_stream_invalidation_before_it_resumes(self):
+        from vector_puck.spoken_stop import OverlapChecks
+        checks = OverlapChecks()
+        verifier = asyncio.create_task(checks.verify(self.s, self.speech))
+        try:
+            await asyncio.sleep(0)
+            checks.ready.set()
+            checks.discard()
+            await asyncio.sleep(0)
+            self.assertFalse(verifier.done())
+            self.assertEqual(self.s.interrupt_checks["local_checks"], 0)
+        finally:
+            verifier.cancel()
+            await asyncio.gather(verifier, return_exceptions=True)
+
+    async def test_whisper_only_wake_anchors_clean_audio_and_both_vosk_detectors_get_raw_mic(self):
+        await self.original_turn()
+        reference = Mock()
+        reference.clean_mic.side_effect = lambda pcm, *, rate: frame(2400)
+        self.s.playback_reference = reference
+        self.speech.detector.candidate = ""
+        self.speech.detector.AcceptWaveform = Mock(return_value=False)
+        free = Detector()
+        free.candidate = ""
+        free.AcceptWaveform = Mock(return_value=False)
+        self.speech.recognizer = Mock(return_value=free)
+        self.speech.vosk = object()
+        self.speech.heard = "Hey Vector"
+        self.speech.started.clear()
+        self.speech.resume.clear()
+        try:
+            for _ in range(8):
+                self.mic(frame(1800))
+            self.assertTrue(await asyncio.to_thread(self.speech.started.wait, 1))
+            self.mic(frame(1850))
+            self.mic(frame(1900))
+            await until(lambda: self.s.interrupt_checks["audio_seconds"] >= 1)
+            self.speech.recognizer.assert_not_called()
+            self.speech.resume.set()
+            await until(lambda: self.s.focus_until > 0)
+            self.assertEqual(self.speech.calls[-1], frame(2400) * 8)
+            self.mic(frame(1950))
+            await until(lambda: free.AcceptWaveform.call_count >= 4)
+        finally:
+            self.speech.resume.set()
+        raw_frames = [frame(1800)] * 8 + [frame(1850), frame(1900), frame(1950)]
+        observed = [call.args[0] for call in self.speech.detector.AcceptWaveform.call_args_list]
+        self.assertEqual(observed, raw_frames)
+        anchored = [call.args[0] for call in free.AcceptWaveform.call_args_list]
+        self.assertEqual(b"".join(anchored), b"".join(raw_frames))
+        self.assertEqual(self.wire.count("vector-focus"), 1)
+        self.assertEqual(self.wire.count("vector-question"), 0)
+
     async def acoustically_cue(self, *, heard="One two three"):
         # Inject only local detector hypotheses. The real worker owns the ring,
         # timing, ASR requests, transport and final dispatch in these tests.
@@ -855,13 +926,15 @@ class AcousticOverlapTests(unittest.IsolatedAsyncioTestCase):
         count = ("One, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve, "
                  "thirteen, fourteen, fifteen, sixteen, seventeen, eighteen, nineteen, twenty.")
         far = np.tile(synth(count, "awb"), 2)
-        mix = far.astype(float) * 0.11
         wake = synth("Hey Vector", "rms")
         question = synth("What is the Triforce in Zelda?", "rms")
-        mix[16000:16000 + len(wake)] += wake
         start = 16000 + len(wake) + 5600
-        mix[start:start + len(question)] += question
-        mic = np.clip(mix[:start + len(question) + 56000], -32768, 32767).astype("<i2").tobytes()
+        near = np.zeros(start + len(question) + 56000, dtype="<i2")
+        near[16000:16000 + len(wake)] = wake
+        near[start:start + len(question)] = question
+        mix = near + far[:len(near)].astype(float) * 0.11
+        mic = np.clip(mix, -32768, 32767).astype("<i2").tobytes()
+        near_mic = near.tobytes()
         speaker = np.repeat(far, 3)[::2].astype("<i2").tobytes()
         dialogue = SimpleNamespace(key="synthetic", quota=Mock(), clear=Mock(),
                                    essentials=SimpleNamespace(room_preferences=lambda: {"spoilers": "avoid"}),
@@ -886,9 +959,10 @@ class AcousticOverlapTests(unittest.IsolatedAsyncioTestCase):
                 emit("run-pipeline", {"start_stage": "wake", "vector_barge_in": True})
                 deadline = time.monotonic()
                 for pos in range(0, len(mic), 1600):
-                    packet = mic[pos:pos + 1600]
                     # The simulated native peer drops its count only at handoff.
-                    emit("audio-chunk", MIC_FORMAT, bytes(len(packet)) if wire.count("vector-question") else packet)
+                    source = near_mic if wire.count("vector-question") else mic
+                    packet = source[pos:pos + 1600]
+                    emit("audio-chunk", MIC_FORMAT, packet)
                     deadline += len(packet) / 32000
                     await asyncio.sleep(max(0, deadline - time.monotonic()))
                 async with asyncio.timeout(5):

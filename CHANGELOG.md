@@ -3,7 +3,7 @@
 ## Unreleased
 
 - The listening ring requires a stable direction measured during speech. It gives a neutral cue when the device’s own audio or conflicting microphone readings make the direction ambiguous.
-- During an answer, the listener can retain words spoken after the wake cue and suppress recognizable speaker echo locally. A separately recovered factual question can receive a read-only answer. This recovery path has no home-control access.
+- During an answer, the wake detector still hears the original microphone signal. A second local recognizer uses the outgoing audio to reduce speaker echo and retains words spoken while it verifies the wake. A recovered factual question can receive a read-only answer using the room’s spoiler preference.
 
 - On supported Echo rings, saying the wake phrase during a reply briefly shows a listening cue while the answer continues. An actual follow-up question takes the turn. An addressed stop still stops playback.
 - Notification pulses now use the brightest of the three available hardware levels by default. Each room can choose a message color and brightness. Weather keeps its watch and warning colors.

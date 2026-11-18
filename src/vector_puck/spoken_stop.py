@@ -218,10 +218,10 @@ class QuestionCapture:
         self.head_probed = False
         self.next_probe = 0
 
-    def feed(self, pcm: bytes, level: float, phrase: str, reply: str, *, seed=False):
+    def feed(self, pcm: bytes, raw: bytes, phrase: str, reply: str, *, seed=False):
         start = len(self.audio)
         self.audio.extend(pcm)
-        if not seed and level >= 0.0006:
+        if not seed and audio_level(pcm) >= 0.0006:
             if self.silence >= self.RATE * 0.35:
                 self.onset = max(0, start - self.RATE // 5)
                 self.head = ""
@@ -232,7 +232,7 @@ class QuestionCapture:
             self.silence += len(pcm)
         ended = False
         if self.detector is not None:
-            ended, heard = decode_words(self.detector, wake_audio(pcm))
+            ended, heard = decode_words(self.detector, wake_audio(raw))
             # An unrestricted acoustic decoder can carry earlier counting or
             # a garbled name in its partial. Its question head is corroboration
             # only; Whisper must still decode the actual informational question.
@@ -242,6 +242,18 @@ class QuestionCapture:
                 if self.head_start is None:
                     self.head_start = max(self.onset, start - (3 * self.PREROLL if ended else self.PREROLL))
                 self.head = head
+        return ended
+
+    def prime(self, pcm: bytes, raw: bytes, following: int, phrase: str, reply: str) -> bool:
+        boundary = len(pcm) - following
+        ended = bool(boundary) and self.feed(pcm[:boundary], raw[:boundary], phrase, reply, seed=True)
+        # A periodic Whisper check can authenticate a wake without any Vosk
+        # proposal. Replay speech that arrived while that check was running.
+        if following:
+            self.anchored = True
+            for start in range(boundary, len(pcm), self.RATE // 10):
+                stop = start + self.RATE // 10
+                ended = self.feed(pcm[start:stop], raw[start:stop], phrase, reply)
         return ended
 
     def probe(self, ended: bool) -> tuple[bytes, bool] | None:
@@ -419,6 +431,8 @@ class OverlapChecks:
             job = self.running = self.pending
             self.pending = None
             self.ready.clear()
+            if job is None:  # The stream was invalidated after waking this task.
+                continue
             if self.current(satellite, job):
                 satellite.interrupt_checks["local_checks"] += 1
                 heard = await asyncio.to_thread(transcribe_audio, speech, job.pcm)
@@ -493,8 +507,8 @@ async def interrupt_loop(satellite, speech):
 
 async def monitor_overlap(satellite, speech, checks):
     detector = await asyncio.to_thread(speech.interrupt_detector)
-    ring = bytearray()
-    position = stable = 0
+    ring, raw_ring = bytearray(), bytearray()
+    position = stop_start = stable = 0
     previous_stream = None
     capture = None
     capture_blocked = 0.0
@@ -510,6 +524,7 @@ async def monitor_overlap(satellite, speech, checks):
             if not satellite.barge_stream or satellite.hardware_muted:
                 capture = None
                 ring.clear()
+                raw_ring.clear()
                 checks.discard()
             continue
         received = data.get("_vector_received_at", time.monotonic())
@@ -518,16 +533,20 @@ async def monitor_overlap(satellite, speech, checks):
             previous_stream = None
             capture = None
             ring.clear()
-            position = stable = 0
+            raw_ring.clear()
+            position = stop_start = stable = 0
             detector.Reset()
             continue
         check_audio(data, payload)
+        raw = payload
+        payload = data.get("_vector_recognition_pcm", raw)
         stream = (epoch, serial)
         if stream != previous_stream or received - last_received > 2:
             if stream == previous_stream:
                 satellite.focus_until = satellite.visual_focus_until = 0.0
             ring.clear()
-            position = stable = 0
+            raw_ring.clear()
+            position = stop_start = stable = 0
             detector.Reset()
             previous_stream = stream
             checks.discard()
@@ -535,10 +554,13 @@ async def monitor_overlap(satellite, speech, checks):
             capture_blocked = 0.0
             next_check = next_candidate = last_voiced = 0.0
         last_received = received
+        confirmed_end = None
         consumed = checks.consumed
         if consumed and consumed[:2] == stream:
             keep = max(0, position - consumed[2])
-            del ring[:max(0, len(ring) - keep)]
+            stop_start = consumed[2]
+            if satellite.focus_until > time.monotonic():
+                confirmed_end = stop_start
             if not keep:
                 detector.Reset()
                 stable = 0
@@ -547,13 +569,15 @@ async def monitor_overlap(satellite, speech, checks):
         checks.append(epoch, serial, payload)
         position += len(payload)
         ring.extend(payload)
+        raw_ring.extend(raw)
         del ring[:max(0, len(ring) - 112000)]
-        size = len(ring)
+        del raw_ring[:max(0, len(raw_ring) - 112000)]
+        size = min(len(ring), position - stop_start)
         stats = satellite.interrupt_checks
         stats["audio_seconds"] = round(stats["audio_seconds"] + len(payload) / 32000, 2)
         # The playback writer is paced on the event loop. Both recognizers
         # and gain processing can take longer than a speaker packet.
-        ended, candidate, level = await asyncio.to_thread(detect_audio, detector, payload)
+        ended, candidate, level = await asyncio.to_thread(detect_audio, detector, raw)
         if not satellite.interrupt_current(epoch, serial, received):
             continue
         # In overlap the constrained recognizer commonly emits "[unk] hey
@@ -591,9 +615,14 @@ async def monitor_overlap(satellite, speech, checks):
                 free = await asyncio.to_thread(factory, speech.vosk, 16000) if factory else None
                 capture = QuestionCapture(free, received)
             if capture is not None:
-                block = bytes(ring[-capture.PREROLL:]) if seed else payload
-                boundary = await asyncio.to_thread(capture.feed, block, level, phrase,
-                                                   satellite.reply_text, seed=seed)
+                if seed:
+                    following = min(position - confirmed_end, len(ring)) if confirmed_end is not None else 0
+                    length = capture.PREROLL + following
+                    boundary = await asyncio.to_thread(capture.prime, bytes(ring[-length:]),
+                                                       bytes(raw_ring[-length:]), following,
+                                                       phrase, satellite.reply_text)
+                else:
+                    boundary = await asyncio.to_thread(capture.feed, payload, raw, phrase, satellite.reply_text)
                 if not capture.anchored and (addressed == "" or attention):
                     capture.anchored = True
                     capture.new_voice = 0
@@ -622,6 +651,6 @@ async def monitor_overlap(satellite, speech, checks):
         eligible = capture and capture.anchored and attention and capture.new_voice >= capture.RATE // 4
         head = capture.head if eligible else ""
         priority = 4 if exact else 1 if ready else 0
-        checks.offer(OverlapCheck(epoch, serial, received, position, bytes(ring), candidate,
+        checks.offer(OverlapCheck(epoch, serial, received, position, bytes(ring[-size:]), candidate,
                                   final_wake, priority, head=head,
                                   lease=satellite.visual_focus_until if eligible else 0))

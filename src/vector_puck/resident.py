@@ -203,6 +203,7 @@ class Satellite:
             while not self.interrupt_audio.empty():
                 previous, stream, data, payload = self.interrupt_audio.get_nowait()
                 if previous == epoch and stream == serial:
+                    payload = data.pop("_vector_recognition_pcm", payload)
                     self.enqueue(("audio-chunk", dict(data, _vector_epoch=turn.epoch), payload))
             await send_event(self.writer, "vector-question")
             status("question_handoff_read_only" if recovered else "question_handoff")
@@ -364,8 +365,11 @@ class Satellite:
                                 and not (self.room_runtime and (self.room_runtime.active or self.room_runtime.signaling))):
                             check_audio(data, overlap_pcm)
                             overlap_pcm = self.playback_reference.clean_mic(overlap_pcm, rate=16000)
+                        # Always overwrite peer metadata. Keep raw mic for Vosk
+                        # and the recognition-only copy for Whisper and handoff.
+                        data["_vector_recognition_pcm"] = overlap_pcm
                         self.interrupt_audio.put_nowait((self.gate.epoch, self.interrupt_serial,
-                                                        data, overlap_pcm))
+                                                        data, event[2]))
                     continue
                 if kind == "audio-chunk" and (self.busy or self.gate.muted
                         or (self.focus_capable and self.speaking and self.reply_text)):
