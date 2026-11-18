@@ -254,7 +254,7 @@ class AmbientFocusTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stream_yields_on_foreground_and_mute_pauses_durable_state(self):
         self.f.sleep.start("rain", 60)
-        with patch("vector_puck.ambient_runtime.loop_pcm", return_value=bytes(32000)):
+        with patch("vector_puck.ambient_runtime.playback_loop", return_value=bytes(32000)):
             task = asyncio.create_task(self.r.run())
             try:
                 await asyncio.sleep(0.35)

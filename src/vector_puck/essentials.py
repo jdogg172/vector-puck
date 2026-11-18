@@ -61,7 +61,7 @@ def tools():
     return [
         tool(
             "sleep_sound",
-            "Play original local rain, thunderstorm, white noise or brown noise on THIS speaker. Use for bedtime/sleep sounds, never research or pretend to play them. Default duration ten hours and level 30. No music service needed. start/resume/pause/stop/status; inactive fields null. Duration 60-43200 seconds, level 5-60 is a bounded digital level, not device volume.",
+            "Play local rain, thunderstorm, white noise or brown noise on THIS speaker. Use for bedtime/sleep sounds, never research or pretend to play them. Default duration ten hours and level 30. No music service needed. start/resume/pause/stop/status; inactive fields null. Duration 60-43200 seconds, level 5-60 is a bounded digital level, not device volume.",
             {
                 "action": {
                     "type": "string",
@@ -170,6 +170,10 @@ class Essentials:
             return None
         words = re.sub(r"^hey[ ,]+(?:vector|victor)[ ,]*", "", text.casefold()).strip(" .!?")
         words = re.sub(r"^please\s+|\s+please$", "", words)
+        words = re.sub(r"\b(?:thunderstorms?|storm sounds?)\b", "thunderstorm", words)
+        if words in {"play thunderstorm for a minute", "play thunderstorm for one minute",
+                     "play thunderstorm sounds for a minute", "play thunderstorm sounds for one minute"}:
+            return "sleep_sound", dict(action="start", sound="thunderstorm", seconds=60, level=30)
         for name in SOUNDS:
             if words in {
                 f"play {name}",
