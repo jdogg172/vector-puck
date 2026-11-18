@@ -12,11 +12,25 @@ Try:
 - “Hey Vector, resume the sleep sounds.”
 - “Hey Vector, stop the sleep sounds.”
 
-Rain, thunderstorm, white noise and brown noise are original locally synthesized loops. Playback stays local and does not generate ten hours of API speech or download a recording. Duration defaults to ten hours, with a one-minute minimum and twelve-hour maximum. The starting digital audio level is 30 on a bounded 5–60 scale; device volume is independent.
+The thunderstorm uses a local field recording when installed. Rain, white noise, brown noise and the fallback storm are synthesized locally. The default sleep session lasts ten hours, with a one-minute minimum and twelve-hour maximum. The starting audio level is 30 on the 5–60 scale.
+
+To install the field recording, run the following on the Compose host from the repository root. Use a Python environment with NumPy and put FFmpeg on the executable path. The two standard room services share the same read-only models folder. Run the preparation before starting the services, or restart them when idle if they have already cached a sound.
+
+```bash
+set -euo pipefail
+mkdir -p models/ambient
+curl --fail --location --retry 2 --output models/ambient/baltic-storm.mp3 \
+  https://cdn.freesound.org/previews/870/870414_801011-hq.mp3
+printf '%s  %s\n' 29ba38de1cfadfd4bca6f4d7aa4a9877745ad4d370840b4873838cbd4922569b models/ambient/baltic-storm.mp3 | sha256sum --check -
+python3 scripts/prepare_storm.py models/ambient/baltic-storm.mp3 models/ambient/thunderstorm.wav --start-seconds 50
+```
+
+Borgory recorded the 27-minute storm on the Baltic coast and dedicated it to the public domain under CC0. The recipe uses the publisher’s high-quality MP3 preview. It converts the recording to mono PCM, limits peaks, overlaps both ends for eight seconds, and starts near an early thunder roll. Playback reads the WAV locally, including on subsequent nights. [Source and credit](https://freesound.org/people/Borgory/sounds/870414/) · [CC0 dedication](https://creativecommons.org/publicdomain/zero/1.0/)
+
 
 The playback deadline and selection survive controller restarts. Reconnecting resumes an active session only until its original deadline. Wake requests pause the background stream while Vector answers. Calls, messages, alarms and due timers take priority. Physical mute, Action and spoken stop pause it durably; a new explicit resume/start is needed. Unmuting alone does not restart stopped sleep audio.
 
-The loop is seamless in generated PCM and starts/ends with short fades. Speaker acoustics, overnight stability, loudness, normal-seat wake recognition and spoken stop over the sound require physical testing on each installation. It is a synthesized ambience, not a field recording of a real storm.
+The player fills each speaker packet across the end of the WAV, with one continuous audio stream. Use “play storm sounds for one minute” to audition the sound and “play storm sounds for ten hours” for bedtime.
 
 ## Saved cooking
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Thunderstorm sleep sessions can play a locally stored CC0 field recording with a crossfaded loop and bounded peaks. The player keeps audio packets full across the file boundary. “Play storm sounds for one minute” starts a short audition. Installation and recording credits are in [Kitchen](docs/KITCHEN.md#sleep-sounds).
+
 ### Weather and notification ring signals
 
 - Orange watch, red warning, white unread-notification and yellow advisory pulses; flood watches alternate orange/blue, flood warnings red/blue, and flood advisories pulse blue. Green stays a brief verified-update success signal.

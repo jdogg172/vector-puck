@@ -10,7 +10,7 @@ import asyncio
 from contextlib import suppress
 import time
 
-from .ambient import RATE, loop_pcm
+from .ambient import RATE, loop_packet, playback_loop
 from .ring_signals import weather_indicator
 
 
@@ -115,7 +115,7 @@ class AmbientRuntime:
                     await asyncio.sleep(0.2)
                     continue
                 if value["sound"] not in self.clips:
-                    self.clips[value["sound"]] = await asyncio.to_thread(loop_pcm, value["sound"])
+                    self.clips[value["sound"]] = await asyncio.to_thread(playback_loop, value["sound"])
                 # Generation may have taken a second. Recheck after that await.
                 if (
                     not s.allowed_base(s.epoch)
@@ -133,8 +133,8 @@ class AmbientRuntime:
                 # A new wake-stage pipeline also listens while local PCM plays.
                 await s.send("vector-listen")
                 await s.send("audio-start", {"rate": RATE, "width": 2, "channels": 1})
-                start = time.monotonic()
-                sent, offset, fade = 0, 0, 0
+                next_send = time.monotonic()
+                offset, fade = 0, 0
                 check_at = 0.0
                 while self.active and self.serial == serial and s.connected and not s.stop.is_set():
                     now = time.monotonic()
@@ -148,19 +148,19 @@ class AmbientRuntime:
                     # One 100 ms packet; the start and final two seconds fade.
                     import numpy as np
 
-                    raw = np.frombuffer(clip[offset : offset + RATE // 10 * 2], dtype="<i2").astype(
-                        np.float32
-                    )
+                    packet, offset = loop_packet(clip, offset, RATE // 10 * 2)
+                    raw = np.frombuffer(packet, dtype="<i2").astype(np.float32)
                     remaining = value["ends"] - self.essentials.sleep.clock()
                     envelope = min(1.0, fade / (RATE * 2), max(0.0, remaining / 2))
-                    pcm = (raw * (value["level"] / 30) * envelope).astype("<i2").tobytes()
+                    pcm = np.clip(raw * (value["level"] / 30) * envelope, -32768, 32767).astype("<i2").tobytes()
                     if self.serial != serial or not self.active:
                         break
                     await s.send("audio-chunk", {"rate": RATE, "width": 2, "channels": 1}, pcm)
-                    offset = (offset + len(pcm)) % len(clip)
                     fade += len(pcm) // 2
-                    sent += len(pcm) // 2
-                    await asyncio.sleep(max(0.0, start + sent / RATE - time.monotonic()))
+                    # Keep one packet in reserve for routine scheduling jitter.
+                    # After a stall, don't dump a backlog into the speaker queue.
+                    next_send = max(next_send + 0.1, time.monotonic())
+                    await asyncio.sleep(max(0.0, next_send - 0.1 - time.monotonic()))
                 if self.serial == serial:
                     await self.stop_stream()
                 await asyncio.sleep(0.2)

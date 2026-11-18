@@ -5,10 +5,12 @@ from __future__ import annotations
 from contextlib import closing
 import json
 import math
+import logging
 import os
 from pathlib import Path
 import sqlite3
 import time
+import wave
 
 SOUNDS = ("rain", "thunderstorm", "white noise", "brown noise")
 RATE = 16000
@@ -46,6 +48,38 @@ def loop_pcm(sound):
     # Fixed, conservative digital level; no device/global volume writes.
     signal *= 0.09 / max(1.0, float(np.max(abs(signal))) / 3.0)
     return np.clip(signal * 32767, -12000, 12000).astype("<i2").tobytes()
+
+
+RECORDING = Path("/models/ambient/thunderstorm.wav")
+
+
+def playback_loop(sound, *, recording=RECORDING):
+    """Load the installed storm once per resident, or use its offline fallback."""
+    if sound == "thunderstorm":
+        try:
+            with wave.open(str(recording), "rb") as wav:
+                frames = wav.getnframes()
+                if (wav.getparams()[:3] != (1, 2, RATE) or wav.getcomptype() != "NONE"
+                        or not RATE <= frames <= RATE * 1800):
+                    raise ValueError("Unsupported storm WAV format or duration")
+                data = wav.readframes(frames)
+                if len(data) != frames * 2:
+                    raise ValueError("Truncated storm WAV")
+                return data
+        except FileNotFoundError:
+            pass  # Standalone installs can use the original synthesized loop.
+        except (wave.Error, EOFError, ValueError, OSError) as exc:
+            logging.getLogger(__name__).warning("Local storm unavailable (%s)", type(exc).__name__)
+    return loop_pcm(sound)
+
+
+def loop_packet(clip, offset, size):
+    """Fill one packet even when a recording ends in the middle of it."""
+    end = offset + size
+    packet = clip[offset:end]
+    if end > len(clip):
+        packet += clip[:end - len(clip)]
+    return packet, end % len(clip)
 
 
 class SleepState:
