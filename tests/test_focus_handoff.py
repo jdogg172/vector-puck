@@ -5,6 +5,8 @@ from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import json
+import os
+import subprocess
 import threading
 import time
 from types import SimpleNamespace
@@ -200,8 +202,9 @@ class FocusTests(unittest.IsolatedAsyncioTestCase):
         self.mic(frame(92))
         self.assertTrue(await asyncio.to_thread(self.speech.started.wait, 1))
         # Continuation arrives during local recognition, before native detection.
+        elapsed = self.s.interrupt_checks["audio_seconds"]
         self.mic(frame(97))
-        await until(lambda: self.s.interrupt_audio.qsize() > 0)
+        await until(lambda: self.s.interrupt_checks["audio_seconds"] > elapsed)
         self.assertFalse(old.done())
         self.speech.resume.set()
         await until(lambda: self.wire.count("audio-stop") == 1)
@@ -676,3 +679,231 @@ class FocusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r for r in records if r["event"] != "request_cancelled"],
                          [{"event": "focus_acquired"}, {"event": "question_handoff"}])
         self.assertEqual(self.wire.count("vector-question"), 1)
+
+    async def acoustically_cue(self, *, heard="One two three"):
+        # Inject only local detector hypotheses. The real worker owns the ring,
+        # timing, ASR requests, transport and final dispatch in these tests.
+        self.free = Detector()
+        self.free.candidate = ""
+        self.speech.recognizer = lambda model, rate: self.free
+        self.speech.vosk = object()
+        self.speech.heard = heard
+        self.speech.detector.candidate = "[unk] hey"
+        self.mic(frame(65))
+        self.speech.detector.candidate = "[unk] hey vector"
+        for _ in range(4):
+            self.mic(frame(81))
+        await until(lambda: self.s.visual_focus_until > 0)
+        self.speech.detector.candidate = ""
+        self.assertEqual(self.s.focus_until, 0)
+
+    async def exercise_recovery(self, tail, head, expected):
+        self.old_reply = "One two three four five six seven eight."
+        self.dialogue.key = "synthetic"
+        self.dialogue.quota = Mock()
+        self.dialogue.essentials.room_preferences = lambda: {"spoilers": "avoid", "private": "excluded"}
+        await self.original_turn("count to eight")
+        await self.acoustically_cue()
+        self.free.candidate = head
+        self.speech.heard = tail
+        self.s.dialogue.essentials.fast_path = Mock(side_effect=AssertionError("privileged fast path"))
+        with (patch("vector_puck.resident.answer", new_callable=AsyncMock, return_value="An answer.") as answer,
+              patch("vector_puck.resident.cedar", new_callable=AsyncMock, return_value=frame(104))):
+            for _ in range(4):
+                self.mic(frame(101))
+            for _ in range(7):
+                self.mic(bytes(3200))
+            await until(lambda: self.wire.count("audio-stop") == 2)
+        self.assertEqual(self.wire.count("vector-question"), 1)
+        self.assertEqual(self.wire.count("vector-stop"), 0)
+        answer.assert_awaited_once()
+        config, key, query, history, guard = answer.await_args.args
+        self.assertEqual(query, expected)
+        self.assertEqual(history, [])
+        self.assertEqual(answer.await_args.kwargs, {"spoiler_mode": "avoid"})
+        self.assertEqual(self.requests, ["count to eight"])
+        self.dialogue.quota.reserve.assert_called_once()
+        self.dialogue.essentials.fast_path.assert_not_called()
+        self.assertIsNone(self.s.pending_history)
+        self.emit("played")
+        await until(lambda: not self.s.speaking)
+        self.assertFalse(self.s.followup.open())
+
+    async def test_count_prefix_and_visual_only_wake_recover_a_read_only_question(self):
+        await self.exercise_recovery("Five, six, what is the Triforce?", "", "what is the Triforce?")
+
+    async def test_early_acoustic_head_joins_late_subject_and_forces_tail_asr(self):
+        await self.exercise_recovery("the Triforce in Zelda?", "what is the", "what is the Triforce in Zelda?")
+
+    async def test_isolated_clip_never_handles_a_stop_call_or_device_command(self):
+        from vector_puck.spoken_stop import OverlapCheck, OverlapChecks
+        await self.original_turn()
+        await self.acoustically_cue()
+        job = OverlapCheck(self.s.epoch, self.s.interrupt_serial, time.monotonic(), 16000,
+                           frame(81), "", False, 3, True, "", True, self.s.visual_focus_until)
+        control_call = Mock()
+        self.s.room_runtime = SimpleNamespace(active=None, signaling=None, control_call=control_call)
+        for text in ("stop", "Hey Vector stop", "Hey Vector answer the call",
+                     "Can you turn on the TV?", "tell the kitchen what is playing"):
+            with self.subTest(text=text):
+                self.assertFalse(await OverlapChecks().apply(self.s, job, text))
+        control_call.assert_not_called()
+        self.assertEqual(self.requests, ["set a timer"])
+        self.assertEqual(self.wire.count("vector-stop"), 0)
+        self.assertEqual(self.wire.count("vector-question"), 0)
+
+    async def test_mute_during_isolated_tail_decode_revokes_capture(self):
+        await self.original_turn()
+        await self.acoustically_cue()
+        self.speech.started.clear()
+        self.speech.resume.clear()
+        self.speech.heard = "What is the Triforce?"
+        for _ in range(4):
+            self.mic(frame(104))
+        for _ in range(6):
+            self.mic(bytes(3200))
+        self.assertTrue(await asyncio.to_thread(self.speech.started.wait, 1))
+        self.emit("vector-mute", {"muted": True})
+        await until(lambda: self.s.hardware_muted)
+        self.speech.resume.set()
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.requests, ["set a timer"])
+        self.assertIsNone(self.s.focus_turn)
+        self.assertEqual(self.wire.count("vector-question"), 0)
+
+    async def test_reference_observes_sent_pcm_and_cleans_marked_recognition_only(self):
+        reference = Mock()
+        reference.clean_mic.return_value = frame(701)
+        self.s.playback_reference = reference
+        self.old_audio = frame(820) * 4
+        old = await self.original_turn()
+        self.mic(frame(99))
+        await until(lambda: reference.clean_mic.called)
+        reference.clean_mic.assert_called_once_with(frame(99), rate=16000)
+        await old
+        chunks = [pcm for event, pcm in self.wire.sent if event == "audio-chunk"]
+        pushed = [call.args[0] for call in reference.push_playback.call_args_list]
+        self.assertEqual(b"".join(chunks), self.old_audio)
+        self.assertEqual(pushed, chunks)
+        self.assertTrue(all(call.kwargs == {"rate": 24000} for call in reference.push_playback.call_args_list))
+        reference.start.assert_called_once()
+        self.emit("played")
+        await until(lambda: self.s.reference_epoch is None)
+        self.assertEqual(reference.method_calls[-1][0], "reset")
+
+    async def test_distinct_windows_must_agree_on_topic_with_only_a_visual_cue(self):
+        from vector_puck.spoken_stop import OverlapCheck, OverlapChecks
+        self.old_reply = "One two three four."
+        await self.original_turn()
+        await self.acoustically_cue()
+        checks = OverlapChecks()
+
+        def job(end):
+            return OverlapCheck(self.s.epoch, self.s.interrupt_serial, time.monotonic(), end,
+                                frame(91), "", False, 2, True, lease=self.s.visual_focus_until)
+
+        first = job(16000)
+        self.assertFalse(await checks.apply(self.s, first, "What is the traffic?"))
+        self.assertFalse(await checks.apply(self.s, job(32000), "One, two. What is the Triforce?"))
+        self.assertFalse(await checks.apply(self.s, job(32000), "What is the Triforce?"))
+        self.assertTrue(await checks.apply(self.s, job(48000), "What is the Triforce in Zelda?"))
+        self.assertTrue(self.s.focus_turn.read_only)
+
+    async def test_reference_resets_on_mute_and_does_not_clean_call_audio(self):
+        reference = Mock()
+        self.s.playback_reference = reference
+        await self.original_turn()
+        capture = Mock()
+        self.s.room_runtime = SimpleNamespace(active=True, signaling=None, capture=capture, cancel=Mock())
+        self.s.activity = "call"
+        self.mic(frame(114))
+        await until(lambda: capture.called)
+        self.assertEqual(capture.call_args.args[1], frame(114))
+        reference.clean_mic.assert_not_called()
+        self.emit("vector-mute", {"muted": True})
+        await until(lambda: self.s.hardware_muted)
+        self.assertIsNone(self.s.reference_epoch)
+        self.assertEqual(reference.method_calls[-1][0], "reset")
+
+    def test_spoiler_only_request_keeps_game_mode_and_excludes_room_tools(self):
+        from vector_puck.assistant import request_body
+        body = request_body(Config(), "What is the Triforce in Zelda?", [], spoiler_mode="avoid")
+        self.assertIn("spoiler-free", body["instructions"])
+        self.assertEqual([tool["type"] for tool in body["tools"]], ["web_search"])
+        self.assertEqual(body["input"], [{"role": "user", "content": "What is the Triforce in Zelda?"}])
+
+
+@unittest.skipUnless(os.environ.get("VECTOR_TEST_ASR_MODELS"), "requires local pinned speech models and FFmpeg flite")
+class AcousticOverlapTests(unittest.IsolatedAsyncioTestCase):
+    async def test_spoken_triforce_over_continuing_count(self):
+        """Real pinned Vosk/Whisper; synthetic voices and speaker, no device or paid APIs."""
+        import numpy as np
+        from vector_puck.resident import respond
+        from vector_puck.speech import Speech
+
+        def synth(text, voice):
+            pcm = subprocess.check_output(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                                           f"flite=text='{text}':voice={voice}", "-ar", "16000",
+                                           "-f", "s16le", "-"])
+            return np.frombuffer(pcm, dtype="<i2")
+
+        root = Path(os.environ["VECTOR_TEST_ASR_MODELS"])
+        config = replace(Config(), working_sound=False, cpu_threads=4,
+                         vosk_model=str(root / "vosk-model-small-en-us-0.15"),
+                         whisper_model=str(root / "faster-whisper-base.en"))
+        speech = await asyncio.to_thread(Speech, config)
+        count = ("One, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve, "
+                 "thirteen, fourteen, fifteen, sixteen, seventeen, eighteen, nineteen, twenty.")
+        far = np.tile(synth(count, "awb"), 2)
+        mix = far.astype(float) * 0.11
+        wake = synth("Hey Vector", "rms")
+        question = synth("What is the Triforce in Zelda?", "rms")
+        mix[16000:16000 + len(wake)] += wake
+        start = 16000 + len(wake) + 5600
+        mix[start:start + len(question)] += question
+        mic = np.clip(mix[:start + len(question) + 56000], -32768, 32767).astype("<i2").tobytes()
+        speaker = np.repeat(far, 3)[::2].astype("<i2").tobytes()
+        dialogue = SimpleNamespace(key="synthetic", quota=Mock(), clear=Mock(),
+                                   essentials=SimpleNamespace(room_preferences=lambda: {"spoilers": "avoid"}),
+                                   respond=AsyncMock(return_value=(count, speaker)))
+        wire = Wire()
+        sat = Satellite(asyncio.StreamReader(), wire, config, dialogue, asyncio.Event())
+        sat.gate.muted = False
+        sat.focus_capable = sat.question_capable = sat.busy = True
+        sat.interrupt_audio = asyncio.Queue(maxsize=100)
+
+        def emit(kind, data, pcm=b""):
+            header = {"type": kind, "data": data, "payload_length": len(pcm)}
+            sat.reader.feed_data(json.dumps(header).encode() + b"\n" + pcm)
+
+        with (patch("vector_puck.resident.answer", new_callable=AsyncMock, return_value="Answer.") as answer,
+              patch("vector_puck.resident.cedar", new_callable=AsyncMock, return_value=bytes(4800))):
+            tasks = [asyncio.create_task(coro) for coro in
+                     (interruptions(sat, speech), sat.pump(), listen(sat, speech))]
+            old = sat.active = asyncio.create_task(respond(sat, "count to twenty", sat.epoch))
+            try:
+                await until(lambda: bool(sat.reply_text))
+                emit("run-pipeline", {"start_stage": "wake", "vector_barge_in": True})
+                deadline = time.monotonic()
+                for pos in range(0, len(mic), 1600):
+                    packet = mic[pos:pos + 1600]
+                    # The simulated native peer drops its count only at handoff.
+                    emit("audio-chunk", MIC_FORMAT, bytes(len(packet)) if wire.count("vector-question") else packet)
+                    deadline += len(packet) / 32000
+                    await asyncio.sleep(max(0, deadline - time.monotonic()))
+                async with asyncio.timeout(5):
+                    while wire.count("audio-stop") < 2:
+                        await asyncio.sleep(0.02)
+                self.assertEqual(wire.count("vector-focus"), 1)
+                self.assertEqual(wire.count("vector-question"), 1)
+                self.assertEqual(wire.count("vector-stop"), 0)
+                answer.assert_awaited_once()
+                self.assertEqual(answer.await_args.args[2].lower().strip(" ?."), "what is the triforce in zelda")
+                self.assertEqual(answer.await_args.args[3], [])
+                self.assertEqual(answer.await_args.kwargs, {"spoiler_mode": "avoid"})
+                dialogue.respond.assert_awaited_once()
+            finally:
+                sat.stop.set()
+                for task in [old, *tasks]:
+                    task.cancel()
+                await asyncio.gather(old, *tasks, return_exceptions=True)

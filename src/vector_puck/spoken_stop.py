@@ -3,14 +3,14 @@ from __future__ import annotations
 
 from array import array
 import asyncio
-from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 import json
 import math
 import re
 import time
 
+from .speech import Speech
 from .transport import check_audio
 from .call_signaling import call_control
 
@@ -134,6 +134,140 @@ def question_started(prompt: str) -> bool:
     return bool(tokens and tokens[0] in starters and any(word not in scaffold for word in tokens[1:]))
 
 
+# A recovery may remove a recognizable piece of the count, never arbitrary
+# preceding speech (in particular a quotation, a negation or a command).
+_INFO = re.compile(r"\b(?:what|who|where|when|why|which|how|tell me about|explain)\b", re.I)
+_COUNT = frozenset(_UNITS + _TENS + ["hundred", "thousand", "and"])
+
+
+def information_fragment(text: str, phrase: str, reply: str) -> str:
+    if phrase.split()[-1] == "vector":
+        # This Whisper spelling never enters the command or full-wake gate.
+        text = re.sub(r"\bvektor\b", "vector", text, flags=re.I)
+    addressed = addressed_prompt(text, phrase, reply)
+    text = text.strip() if addressed is None else addressed
+    match = _INFO.search(text)
+    if match is None:
+        return ""
+    prefix = text[:match.start()]
+    if words(prefix) and not (set(playback_words(prefix)) <= _COUNT and playback_echo(prefix, reply)):
+        return ""
+    fragment = text[match.start():].strip()
+    if playback_echo(fragment, reply) or addressed_prompt(fragment, phrase) is not None:
+        return ""
+    return fragment
+
+
+def recovered_question(text: str, phrase: str, reply: str, acoustic_head: str) -> str | None:
+    fragment = information_fragment(text, phrase, reply)
+    if not fragment and acoustic_head:
+        # Join only words the two recognizers actually heard, with a shared
+        # boundary. A topic by itself is never a substitute for a question.
+        head = list(re.finditer(r"[a-z0-9]+", acoustic_head, re.I))
+        tail = words(text)
+        if len(tail) >= 2:
+            for count in range(min(len(head), len(tail)), 0, -1):
+                if words(acoustic_head)[-count:] == tail[:count]:
+                    joined = acoustic_head[:head[-count].start()] + text.strip()
+                    fragment = information_fragment(joined, phrase, reply)
+                    break
+    if (fragment.rstrip().endswith(("-", "…", "...")) or not question_started(fragment)
+            or playback_echo(fragment, reply)):
+        return None
+    return fragment
+
+
+def same_information(first: str, final: str, *, partial=False) -> bool:
+    def normalized(text):
+        return words(re.sub(r"\b(what|who|where|when|how)['’]s\b", r"\1 is", text, flags=re.I))
+
+    seed = normalized(first)
+    while seed and seed[-1] in {"in", "this", "that", "the", "a", "of", "at", "on"}:
+        seed.pop()
+    if not question_started(" ".join(seed)):
+        return False
+    # Allow a word boundary to change ("tri force") but require agreement
+    # through the topic, not just a shared "what is the ...".
+    prefix = "".join(seed)
+    tokens = normalized(final)
+    if any("".join(tokens[:end]) == prefix for end in range(1, len(tokens) + 1)):
+        return True
+    # A growing window can complete the last name differently. Require a
+    # complete shared topic before that name and acoustic agreement on its onset.
+    return (partial and len(seed) == len(tokens) and seed[:-1] == tokens[:-1]
+            and len(seed[-1]) >= 3 and tokens[-1].startswith(seed[-1][:3])
+            and question_started(" ".join(seed[:-1])))
+
+
+class QuestionCapture:
+    """One short, contiguous recording per candidate, independent of the stop ring."""
+
+    RATE = 32000
+    MAX_BYTES = 10 * RATE
+    PREROLL = RATE  # A Vosk partial can arrive after the first question word.
+
+    def __init__(self, detector, received: float):
+        self.detector = detector
+        self.started = received
+        self.audio = bytearray()
+        self.onset = self.silence = self.new_voice = 0
+        self.head = ""
+        self.head_start = None
+        self.cued = self.anchored = False
+        self.regular_probes = self.tail_probes = 0
+        self.head_probed = False
+        self.next_probe = 0
+
+    def feed(self, pcm: bytes, level: float, phrase: str, reply: str, *, seed=False):
+        start = len(self.audio)
+        self.audio.extend(pcm)
+        if not seed and level >= 0.0006:
+            if self.silence >= self.RATE * 0.35:
+                self.onset = max(0, start - self.RATE // 5)
+                self.head = ""
+                self.head_start = None
+            self.new_voice += len(pcm)
+            self.silence = 0
+        elif not seed:
+            self.silence += len(pcm)
+        ended = False
+        if self.detector is not None:
+            ended, heard = decode_words(self.detector, wake_audio(pcm))
+            # An unrestricted acoustic decoder can carry earlier counting or
+            # a garbled name in its partial. Its question head is corroboration
+            # only; Whisper must still decode the actual informational question.
+            starts = list(_INFO.finditer(heard))
+            head = information_fragment(heard[starts[-1].start():], phrase, reply) if starts else ""
+            if head:
+                if self.head_start is None:
+                    self.head_start = max(self.onset, start - (3 * self.PREROLL if ended else self.PREROLL))
+                self.head = head
+        return ended
+
+    def probe(self, ended: bool) -> tuple[bytes, bool] | None:
+        if self.new_voice < self.RATE // 4:
+            return None
+        end = len(self.audio)
+        terminal = ended or self.silence >= self.RATE * 0.4
+        if terminal and self.tail_probes < 2:
+            self.tail_probes += 1
+            self.new_voice = 0  # Sustained silence gets exactly one final check.
+        elif terminal:
+            return None
+        elif self.head and not self.head_probed and self.new_voice >= self.RATE // 2:
+            self.head_probed = True
+        elif self.regular_probes < 2 and end >= self.next_probe and self.new_voice >= self.RATE:
+            self.regular_probes += 1
+        else:
+            return None
+        self.next_probe = end + self.RATE
+        start = self.head_start if self.head_start is not None else self.onset
+        # Keep the question onset even when the rolling stop recognizer has
+        # advanced beyond it. Strip excess trailing silence from late checks.
+        stop = end - max(0, self.silence - self.RATE // 3)
+        return bytes(self.audio[start:stop]), terminal
+
+
 @dataclass(frozen=True)
 class FocusTurn:
     """Only the local interrupt worker can enqueue this listener event."""
@@ -142,8 +276,19 @@ class FocusTurn:
     addressed: bool
     previous_query: str
     reply: str
+    read_only: bool = False
+    acoustic_head: str = ""
+    ended: bool = False
+
+    def verify_information(self, text: str, phrase: str) -> str | None:
+        prompt = recovered_question(text, phrase, self.reply, self.acoustic_head or self.prompt)
+        if not prompt or words(prompt) == words(self.previous_query):
+            return None
+        return prompt if same_information(self.prompt, prompt) else None
 
     def query(self, text: str, phrase: str) -> str | None:
+        if self.read_only:
+            return self.verify_information(text, phrase)
         prompt = addressed_prompt(text, phrase, self.reply)
         if prompt is None:
             if self.addressed:
@@ -176,14 +321,29 @@ def wake_audio(pcm: bytes) -> bytes:
                        for value in samples)).tobytes()
 
 
-def detect_audio(detector, payload: bytes) -> tuple[bool, str, float]:
-    ended = detector.AcceptWaveform(wake_audio(payload))
+def decode_words(detector, normalized: bytes) -> tuple[bool, str]:
+    ended = detector.AcceptWaveform(normalized)
     result = json.loads(detector.Result() if ended else detector.PartialResult())
-    return ended, result.get("text" if ended else "partial", ""), audio_level(payload)
+    return ended, result.get("text" if ended else "partial", "")
+
+
+def detect_audio(detector, payload: bytes) -> tuple[bool, str, float]:
+    ended, text = decode_words(detector, wake_audio(payload))
+    return ended, text, audio_level(payload)
 
 
 def transcribe_audio(speech, pcm: bytes) -> str:
-    return speech.transcribe(wake_audio(pcm))
+    normalized = wake_audio(pcm)
+    if not isinstance(speech, Speech):
+        return speech.transcribe(normalized)
+    # No temperature retries or long continuations on short, noisy overlap
+    # clips. Normal, fully addressed conversation retains its own ASR policy.
+    with speech.lock:
+        audio = speech.np.frombuffer(normalized, dtype="<i2").astype(speech.np.float32) / 32768
+        segments, _ = speech.whisper.transcribe(
+            audio, language="en", beam_size=1, temperature=0, max_new_tokens=48,
+            condition_on_previous_text=False, vad_filter=False)
+        return " ".join(segment.text.strip() for segment in segments).strip()[:2000]
 
 
 async def interruptions(satellite, speech):
@@ -199,9 +359,145 @@ async def interruptions(satellite, speech):
         satellite.interrupt_worker_running = False
 
 
+@dataclass
+class OverlapCheck:
+    epoch: int
+    serial: int
+    received: float
+    end: int
+    pcm: bytes
+    candidate: str
+    final_wake: bool
+    priority: int
+    recovered: bool = False
+    head: str = ""
+    terminal: bool = False
+    lease: float = 0.0
+    following_audio: bytearray = field(default_factory=bytearray)
+    contiguous: bool = True
+
+
+class OverlapChecks:
+    """One local inference and one replaceable proposal, never a backlog of ASR jobs."""
+    def __init__(self):
+        self.running = self.pending = self.consumed = self.witness = None
+        self.ready = asyncio.Event()
+
+    def discard(self):
+        self.pending = self.consumed = self.witness = None
+        self.ready.clear()
+        if self.running:
+            self.running.contiguous = False
+            self.running.following_audio.clear()
+
+    def offer(self, job):
+        pending = self.pending
+        if (pending is None or (pending.epoch, pending.serial) != (job.epoch, job.serial)
+                or not pending.contiguous or job.received - pending.received > 2
+                or job.priority >= pending.priority):
+            self.pending = job
+            self.ready.set()
+
+    def append(self, epoch, serial, pcm):
+        for job in (self.running, self.pending):
+            if job and not job.terminal and job.contiguous and (job.epoch, job.serial) == (epoch, serial):
+                if len(job.following_audio) + len(pcm) > (128000 if job.recovered else 64000):
+                    job.contiguous = False
+                else:
+                    job.following_audio.extend(pcm)
+
+    @staticmethod
+    def current(satellite, job):
+        if job.recovered and (job.lease != satellite.visual_focus_until or time.monotonic() >= job.lease):
+            return False
+        return job.contiguous and satellite.interrupt_current(
+            job.epoch, job.serial, job.received, max_age=4 if job.recovered else 2)
+
+    async def verify(self, satellite, speech):
+        while True:
+            await self.ready.wait()
+            job = self.running = self.pending
+            self.pending = None
+            self.ready.clear()
+            if self.current(satellite, job):
+                satellite.interrupt_checks["local_checks"] += 1
+                heard = await asyncio.to_thread(transcribe_audio, speech, job.pcm)
+                if self.current(satellite, job):
+                    if await self.apply(satellite, job, heard):
+                        self.consumed = (job.epoch, job.serial, job.end, time.monotonic())
+                        if self.pending and not self.pending.recovered and self.pending.end <= job.end:
+                            self.pending = None
+                            self.ready.clear()
+            self.running = None
+
+    async def apply(self, satellite, job, heard):
+        phrase, reply = satellite.config.wake_phrase, satellite.reply_text
+        if satellite.focus_capable and playback_echo(heard, reply):
+            return False
+        pcm = job.pcm
+        if job.recovered:
+            return await self.information(satellite, job, heard)
+
+        # Only the complete, unsliced rolling check may execute an explicit
+        # stop/call command. Isolated recordings are permanently read-only.
+        command = stop_command(heard, phrase)
+        ambiguous = bool(command and satellite.focus_capable and reply and
+                         (job.final_wake or (playback_echo(command, reply)
+                                             and not interrupt_requested(job.candidate, phrase))))
+        action = None if ambiguous else call_control(heard, phrase)
+        handled = bool(action and satellite.room_runtime
+                       and satellite.room_runtime.control_call(action, job.epoch))
+        if handled or (command and not ambiguous):
+            satellite.interrupt_checks["confirmed"] += 1
+            if not (handled and action == "answer"):
+                await satellite.stop_reply()
+            return True
+        if satellite.focus_capable and not action:
+            consumed = await satellite.focus_input(job.epoch, job.serial, job.received, heard, pcm,
+                                                   wake_only=ambiguous, check=job)
+            if not consumed and not ambiguous and job.lease:
+                return await self.information(satellite, job, heard)
+            return consumed
+        return False
+
+
+    async def information(self, satellite, job, heard):
+        lease = (job.epoch, job.serial, job.lease)
+        if not job.lease or satellite.visual_focus_until != job.lease or time.monotonic() >= job.lease:
+            return False
+        prompt = recovered_question(heard, satellite.config.wake_phrase, satellite.reply_text, job.head)
+        if not prompt:
+            return False
+        # During speech, corroborate the topic via free Vosk or a different
+        # Whisper window. A wake alone, including its own ASR packet, cannot qualify.
+        previous = self.witness
+        agrees = (previous and previous[0] == lease and job.end - previous[1] >= 8000
+                  and same_information(previous[2], prompt, partial=True))
+        if not job.terminal and not agrees and not same_information(job.head, prompt):
+            self.witness = (lease, job.end, prompt)
+            return False
+        return await satellite.focus_input(job.epoch, job.serial, job.received, prompt, job.pcm,
+                                           recovered=True, acoustic_head=job.head, ended=job.terminal,
+                                           check=job)
+
+
 async def interrupt_loop(satellite, speech):
+    checks = OverlapChecks()
+    async with asyncio.TaskGroup() as group:
+        verifier = group.create_task(checks.verify(satellite, speech))
+        try:
+            await monitor_overlap(satellite, speech, checks)
+        finally:
+            verifier.cancel()
+
+
+async def monitor_overlap(satellite, speech, checks):
     detector = await asyncio.to_thread(speech.interrupt_detector)
-    ring, size, stable, previous_stream = deque(), 0, 0, None
+    ring = bytearray()
+    position = stable = 0
+    previous_stream = None
+    capture = None
+    capture_blocked = 0.0
     next_check = next_candidate = 0.0
     last_voiced = last_received = 0.0
     phrase = satellite.config.wake_phrase
@@ -211,11 +507,18 @@ async def interrupt_loop(satellite, speech):
             async with asyncio.timeout(0.25):
                 epoch, serial, data, payload = await satellite.interrupt_audio.get()
         except asyncio.TimeoutError:
+            if not satellite.barge_stream or satellite.hardware_muted:
+                capture = None
+                ring.clear()
+                checks.discard()
             continue
         received = data.get("_vector_received_at", time.monotonic())
         if not satellite.interrupt_current(epoch, serial, received):
+            checks.discard()
+            previous_stream = None
+            capture = None
             ring.clear()
-            size = stable = 0
+            position = stable = 0
             detector.Reset()
             continue
         check_audio(data, payload)
@@ -224,23 +527,39 @@ async def interrupt_loop(satellite, speech):
             if stream == previous_stream:
                 satellite.focus_until = satellite.visual_focus_until = 0.0
             ring.clear()
-            size = stable = 0
+            position = stable = 0
             detector.Reset()
             previous_stream = stream
+            checks.discard()
+            capture = None
+            capture_blocked = 0.0
             next_check = next_candidate = last_voiced = 0.0
         last_received = received
-        ring.append(payload)
-        size += len(payload)
+        consumed = checks.consumed
+        if consumed and consumed[:2] == stream:
+            keep = max(0, position - consumed[2])
+            del ring[:max(0, len(ring) - keep)]
+            if not keep:
+                detector.Reset()
+                stable = 0
+            next_check = next_candidate = consumed[3] + 0.25
+            checks.consumed = None
+        checks.append(epoch, serial, payload)
+        position += len(payload)
+        ring.extend(payload)
+        del ring[:max(0, len(ring) - 112000)]
+        size = len(ring)
         stats = satellite.interrupt_checks
         stats["audio_seconds"] = round(stats["audio_seconds"] + len(payload) / 32000, 2)
-        while size > 112000 and len(ring) > 1:
-            size -= len(ring.popleft())
         # The playback writer is paced on the event loop. Both recognizers
         # and gain processing can take longer than a speaker packet.
         ended, candidate, level = await asyncio.to_thread(detect_audio, detector, payload)
         if not satellite.interrupt_current(epoch, serial, received):
             continue
-        addressed = addressed_prompt(candidate, phrase) if satellite.focus_capable else None
+        # In overlap the constrained recognizer commonly emits "[unk] hey
+        # vector". Unknown edge tokens are acceptable only for a visual cue.
+        hint = re.sub(r"^(?:\s*\[unk\]\s*)+|(?:\s*\[unk\]\s*)+$", "", candidate).strip()
+        addressed = addressed_prompt(hint, phrase) if satellite.focus_capable else None
         proposed = (addressed is not None or interrupt_requested(candidate, phrase)
                     or (satellite.room_runtime and satellite.room_runtime.signaling
                         and call_control(candidate, phrase)))
@@ -250,10 +569,43 @@ async def interrupt_loop(satellite, speech):
             last_voiced = received
         recent_voice = last_voiced > 0 and received - last_voiced < 1.6
         final_wake = ended and addressed == "" and recent_voice and bool(satellite.reply_text)
-        if final_wake:
+        # A stable full partial can precede the first question word. Waiting
+        # for the stop grammar's final result can lose an entire same-breath turn.
+        if final_wake or (addressed == "" and stable >= 3 and recent_voice and satellite.reply_text):
             await satellite.candidate_focus(epoch, serial, received)
 
         now = time.monotonic()
+        attention = satellite.visual_focus_until > now
+        if capture and (len(capture.audio) + len(payload) > capture.MAX_BYTES
+                        or now - capture.started > 10 or (capture.cued and not attention)
+                        or (not attention and now - capture.started > 2)):
+            capture = None
+            capture_blocked = satellite.visual_focus_until if attention else now + 0.25
+        probe = None
+        if satellite.question_capable and satellite.reply_text and now >= capture_blocked:
+            seed = capture is None
+            early = hint == phrase.split()[0] or addressed is not None
+            if seed and (attention or early):
+                # Separate from both the command grammar and the normal listener.
+                factory = getattr(speech, "recognizer", None)
+                free = await asyncio.to_thread(factory, speech.vosk, 16000) if factory else None
+                capture = QuestionCapture(free, received)
+            if capture is not None:
+                block = bytes(ring[-capture.PREROLL:]) if seed else payload
+                boundary = await asyncio.to_thread(capture.feed, block, level, phrase,
+                                                   satellite.reply_text, seed=seed)
+                if not capture.anchored and (addressed == "" or attention):
+                    capture.anchored = True
+                    capture.new_voice = 0
+                capture.cued |= attention
+                if attention and not (interrupt_requested(candidate, phrase) or call_control(candidate, phrase)):
+                    probe = capture.probe(boundary)
+        if probe:
+            clip, terminal = probe
+            checks.offer(OverlapCheck(epoch, serial, received, position, clip, candidate, final_wake,
+                                      3 if terminal else 2, True, capture.head, terminal,
+                                      satellite.visual_focus_until))
+            continue
         due = size >= 51200 and level >= 0.0006
         if satellite.focus_capable and satellite.reply_text:
             minimum = 12800 if satellite.focus_until > now else 25600
@@ -266,38 +618,10 @@ async def interrupt_loop(satellite, speech):
         next_check = now + 1.5
         if ready:
             next_candidate = now + 0.5
-        stats["local_checks"] += 1
-        pcm = b"".join(ring)
-        heard = await asyncio.to_thread(transcribe_audio, speech, pcm)
-        if not satellite.interrupt_current(epoch, serial, received):
-            continue
-        if satellite.focus_capable and playback_echo(heard, satellite.reply_text):
-            # This background check can land halfway through a real wake.
-            # Keep the streaming detector and its bounded audio context intact.
-            continue
-        command = stop_command(heard, phrase)
-        # An ambiguous stop may acknowledge a full address actually heard
-        # by Whisper. It cannot cancel or authorize a new question.
-        ambiguous_stop = bool(command and satellite.focus_capable and satellite.reply_text
-                              and (final_wake or (playback_echo(command, satellite.reply_text)
-                                                  and not interrupt_requested(candidate, phrase))))
-        action = None if ambiguous_stop else call_control(heard, phrase)
-        handled = bool(action and satellite.room_runtime
-                       and satellite.room_runtime.control_call(action, epoch))
-        consumed = False
-        if handled and action == "answer":
-            stats["confirmed"] += 1
-            consumed = True
-        elif (command and not ambiguous_stop) or handled:
-            stats["confirmed"] += 1
-            await satellite.stop_reply()
-        elif satellite.focus_capable and not action:
-            consumed = await satellite.focus_input(epoch, serial, received, heard, pcm,
-                                                   wake_only=ambiguous_stop)
-        if consumed:
-            ring.clear()
-            size = stable = 0
-            detector.Reset()
-            # Wait for fresh voiced audio before checking a short follow-on.
-            last_voiced = 0.0
-            next_check = next_candidate = time.monotonic() + 0.25
+        exact = interrupt_requested(candidate, phrase) or call_control(candidate, phrase)
+        eligible = capture and capture.anchored and attention and capture.new_voice >= capture.RATE // 4
+        head = capture.head if eligible else ""
+        priority = 4 if exact else 1 if ready else 0
+        checks.offer(OverlapCheck(epoch, serial, received, position, bytes(ring), candidate,
+                                  final_wake, priority, head=head,
+                                  lease=satellite.visual_focus_until if eligible else 0))

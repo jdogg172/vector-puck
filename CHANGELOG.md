@@ -2,7 +2,10 @@
 
 ## Unreleased
 
-- On supported Echo rings, saying the wake phrase during a reply briefly lights the side facing the speaker while the answer continues. An actual follow-up question takes the turn. An addressed stop still stops playback.
+- The listening ring requires a stable direction measured during speech. It gives a neutral cue when the device’s own audio or conflicting microphone readings make the direction ambiguous.
+- During an answer, the listener can retain words spoken after the wake cue and suppress recognizable speaker echo locally. A separately recovered factual question can receive a read-only answer. This recovery path has no home-control access.
+
+- On supported Echo rings, saying the wake phrase during a reply briefly shows a listening cue while the answer continues. An actual follow-up question takes the turn. An addressed stop still stops playback.
 - Notification pulses now use the brightest of the three available hardware levels by default. Each room can choose a message color and brightness. Weather keeps its watch and warning colors.
 - The local mobile portal shares the speaker’s alarm clock. Select a room to add a one-time or recurring alarm, edit or cancel it, or snooze or dismiss a ringing alarm. Room settings include message color, notification brightness and game spoilers. Caregiver pairing gives another phone access to Vector room controls.
 
