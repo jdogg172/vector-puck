@@ -22,6 +22,7 @@ from vector_puck.speech import Speech, endpoint_ready, question
 from vector_puck.state import Cancelled, FollowUp, Gate
 from vector_puck.transport import MIC_FORMAT, check_audio, read_event, send_event
 from vector_puck.tune import working_audio
+from vector_puck.voice_style import CONVERSATION_STYLE, VERBATIM_DELIVERY
 
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
@@ -214,6 +215,18 @@ class ConfigAndStateTests(unittest.TestCase):
         with self.assertRaises(CloudError):
             unpack({"status": "incomplete"})
 
+    def test_conversation_style_survives_optional_tool_contexts(self):
+        home = SimpleNamespace(tools=lambda: [{"name": "home_action"}])
+        household = SimpleNamespace(tools=lambda: [{"name": "room_call"}], context=lambda: {})
+        essentials = SimpleNamespace(tools=lambda: [{"name": "sleep_sound"}], context=lambda: {})
+        for services in ({}, {"home": home}, {"household": household}, {"essentials": essentials},
+                         {"home": home, "household": household, "essentials": essentials}):
+            with self.subTest(services=list(services)):
+                body = request_body(Config(), "Tell me a joke", [], **services)
+                self.assertEqual(body["instructions"].count(CONVERSATION_STYLE), 1)
+                self.assertEqual([t["name"] for t in body["tools"]],
+                                 [s.tools()[0]["name"] for s in services.values()])
+
 
 class FakeConnection:
     def __init__(self, events):
@@ -249,14 +262,16 @@ def voice_events(text="Water falls."):
 
 class CloudAndCancellationTests(unittest.IsolatedAsyncioTestCase):
     async def test_realtime_exact_text_input_and_cedar_output(self):
-        connection = FakeConnection(voice_events())
-        pcm = await cedar(Config(), "synthetic", "Water falls.", lambda: None,
+        text = "Your reminder says, 'Tell me a joke.'"
+        connection = FakeConnection(voice_events(text))
+        pcm = await cedar(Config(), "synthetic", text, lambda: None,
                           lambda *a, **k: connection)
         self.assertEqual(len(pcm), 4800)
         self.assertEqual(connection.sent[0]["session"]["audio"]["output"]["voice"], "cedar")
+        self.assertEqual(connection.sent[0]["session"]["instructions"], VERBATIM_DELIVERY)
         response = connection.sent[1]["response"]
         self.assertEqual(response["conversation"], "none")
-        self.assertEqual(response["input"][0]["content"], [{"type":"input_text", "text":"Water falls."}])
+        self.assertEqual(response["input"][0]["content"], [{"type":"input_text", "text":text}])
         self.assertNotIn("input_audio_buffer", json.dumps(connection.sent))
         self.assertTrue(connection.closed)
 
@@ -276,7 +291,7 @@ class CloudAndCancellationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_changed_spoken_answer_rejected(self):
         connection = FakeConnection(voice_events("Something else."))
-        with self.assertRaises(CloudError):
+        with self.assertRaisesRegex(CloudError, "voice_changed_answer"):
             await cedar(Config(), "synthetic", "Water falls.", lambda: None, lambda *a, **k: connection)
 
     async def test_stale_connection_or_microphone_closes_and_invalidates(self):

@@ -8,18 +8,20 @@ This is a community experiment for hardware owners. The controller and patches a
 
 - “Hey Vector” detection with local Vosk and local Whisper transcription.
 - GPT answers through the Responses API and natural Cedar speech through Realtime.
+- A Zelda and Pokémon guide for hints, lore and quizzes, with read-only lookup on official game sites for current events and promotions.
 - An original, locally synthesized working tune while the answer is prepared.
 - An eight-second follow-up window after playback, bounded by turn and session limits.
 - Physical microphone mute and Action-button cancellation, including queued speaker audio.
 - Experimental local spoken stop during the working tune and Cedar replies, with a short confirmation tone.
 - Optional, allowlisted Home Assistant audio, thermostat, and TV-script controls, starting in dry-run mode.
 - Optional shared shopping lists, named timers/reminders, persistent alarms, single-responder coordination, accepted room calls and announcements.
+- An optional family portal for room alarms, message color, message and weather brightness, and game spoiler preferences.
 - Local rain/thunderstorm/white-noise/brown-noise playback, saved recipes with room-specific cooking progress, and deterministic conversions.
 - Expiring RGB update status and a verified-completion green pulse, subordinate to mute and urgent indications.
 - A status-only delivery inbox foundation; delivery account adapters are not included.
 - A restricted Docker controller, checksum-pinned model downloads, tests, and rollback instructions.
 
-**The current source adds [kitchen essentials and update lights](docs/KITCHEN.md) to the optional household mode and full-size Echo 2 support.** Start with [the household guide](docs/HOUSEHOLD.md) for two or more rooms, alarms, calling and shared lists. [The changelog](CHANGELOG.md) records features and fixes. Home control remains disabled until an owner configures it; generic shell and HA-service tools are never exposed. Web search, calendars, live weather sources, and personal deployment settings are not included. Software validation is separate from real hardware acceptance; see [validation](docs/VALIDATION.md).
+For two or more rooms, start with the [household guide](docs/HOUSEHOLD.md). Cooking, sleep sounds and update lights are covered in [kitchen essentials](docs/KITCHEN.md). Home Assistant device control requires an explicit owner configuration. Search is available only to the game guide. Calendars, live weather sources and personal deployment settings are outside the public starter. See the [changelog](CHANGELOG.md) and [validation notes](docs/VALIDATION.md) for feature history and hardware test coverage.
 
 ## Requirements
 
@@ -117,9 +119,13 @@ python3 -m json.tool state/health.json
 
 Unmute the puck, ask “Hey Vector, why does thunder happen?”, and wait for its reply. After the ready chime, say “Explain that more simply” within eight seconds. Check the physical mute button and Action cancellation before relying on it. Follow-ups are limited to three turns and a three-minute session by default.
 
-During a long reply, say “Hey Vector, stop.” The local worker confirms an addressed stop, discards queued output, and requests the puck's short confirmation tone. Physical Action and mute remain available. New configurations enable `experimental_spoken_stop`; existing configurations that explicitly set it to `false` stay disabled. Read [spoken-stop behavior and limits](docs/SPOKEN_STOP.md) before changing it.
+During a long reply, say **“Hey Vector, stop”** to cancel it. On a satellite advertising `vector_focus`, saying just **“Hey Vector”** during Cedar playback lets the reply continue and opens a listening window of up to eight seconds. On a satellite that also advertises `vector_question`, ask a new question in that window or say the wake phrase and question together. Once the controller recognizes the start of the question locally, it cuts off the old reply and listens for the rest. **Physical ring direction and recognition while voices overlap are experimental.** The feature uses `experimental_spoken_stop`, enabled by default. Physical Action and mute remain available. [Spoken stop, focus and room checks](docs/SPOKEN_STOP.md)
 
-The controller has no published inbound port. The puck's Wyoming port **16700 is an unauthenticated LAN service**; keep it on a trusted or isolated network and never forward it to the Internet. Retain the upstream device firewall. See [privacy and network boundaries](docs/PRIVACY.md).
+For game help, try **“Hey Vector, open the Hyrule field guide”** or **“Hey Vector, open the Pokédex.”** Ask for a shrine hint or which Pokémon Mystery Gifts are active. Current-event and promotion questions trigger a lookup restricted to official Nintendo and Pokémon sites. If the required lookup lacks an allowed citation, Vector says it could not verify the information. The guide can explain eligibility and deadlines. Redemption stays with the player.
+
+For phone access, enable `management_socket_dir` on the household residents you want to manage and run the portal separately. Sign in through Home Assistant or use an owner-issued caregiver pairing code. Select a room to edit its alarms or choose whether Vector should ask about, allow or avoid game spoilers. [Family portal setup and pairing](docs/PORTAL.md) · [Resident socket configuration](docs/ROOM_MANAGEMENT.md)
+
+The resident controller has no published inbound port. The optional portal has its own browser listener, bound to loopback by default. The puck's Wyoming port **16700 is an unauthenticated LAN service**. Keep it on a trusted or isolated network, never forward it to the Internet, and retain the upstream device firewall. [Privacy and network boundaries](docs/PRIVACY.md)
 
 ## 5. Optional Home Assistant and TV controls
 

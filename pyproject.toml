@@ -19,6 +19,9 @@ vector-puck = "vector_puck.resident:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+vector_puck = ["portal_ui.html", "portal_ui.css", "portal_ui.js"]
+
 [tool.ruff]
 line-length = 100
 

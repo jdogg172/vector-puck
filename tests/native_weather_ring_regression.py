@@ -35,25 +35,39 @@ async def main(binary):
         await peer.send("describe")
         _, info = await peer.expect("info")
         assert info[1]["satellite"]["vector_weather_indicator"]
-        for kind, colour in [("message", "w2"), ("watch", "02f2"), ("warning", "00f2"),
-                             ("advisory", "04f2"), ("flood-advisory", "16f2")]:
+        async def check_pulse(kind, colour, **options):
             before = len(lines())
             name = "hassmic_pulse_" + colour
-            await peer.send("vector-indicator", dict(kind=kind, duration_ms=700))
+            await peer.send("vector-indicator", dict(kind=kind, duration_ms=300, **options))
             await until(lambda: "-s " + name in lines()[before:])
             await until(lambda: "-u " + name in lines()[before:])
-        for kind, first in [("flood-watch", "02f2"), ("flood-warning", "00f2")]:
+
+        for kind, colour in [("message", "w0"), ("watch", "02f0"), ("warning", "00f0"),
+                             ("advisory", "04f0"), ("flood-advisory", "16f0")]:
+            await check_pulse(kind, colour)
+        for color, colour in [("white", "w0"), ("cyan", "12f0"), ("green", "08f0"),
+                              ("violet", "18f0"), ("amber", "03f0"), ("unknown", "w0")]:
+            await check_pulse("message", colour, color=color)
+        for pct, level in [(20, 2), (39, 2), (40, 1), (74, 1), (75, 0), (100, 0),
+                           (19, 0), (101, 0), (39.5, 0), ("39", 0)]:
+            await check_pulse("watch", f"02f{level}", brightness_pct=pct, color="violet")
+        await check_pulse("message", "12f1", color="cyan", brightness_pct=55)
+        await check_pulse("updated", "08f2", color="violet", brightness_pct=100)
+
+        for kind, first in [("flood-watch", "02f0"), ("flood-warning", "00f0")]:
             before = len(lines())
-            await peer.send("vector-indicator", dict(kind=kind, duration_ms=6200))
+            await peer.send("vector-indicator", dict(kind=kind, duration_ms=6200, color="violet"))
             await until(lambda: "-s hassmic_pulse_" + first in lines()[before:])
-            await until(lambda: "-s hassmic_pulse_16f2" in lines()[before:])
+            await until(lambda: "-s hassmic_pulse_16f0" in lines()[before:])
             # Renew while blue: the pulse phase must not reset to the first colour.
             renewed = len(lines())
-            await peer.send("vector-indicator", dict(kind=kind, duration_ms=3500))
+            await peer.send("vector-indicator", dict(kind=kind, duration_ms=3500, brightness_pct=50))
             await peer.barrier()
+            await until(lambda: "-s hassmic_pulse_16f1" in lines()[renewed:])
             await asyncio.sleep(0.3)
-            assert "-s hassmic_pulse_" + first not in lines()[renewed:]
-            await until(lambda: "-s hassmic_pulse_" + first in lines()[renewed:])
+            renewed_first = first[:-1] + "1"
+            assert "-s hassmic_pulse_" + renewed_first not in lines()[renewed:]
+            await until(lambda: "-s hassmic_pulse_" + renewed_first in lines()[renewed:])
             await until(lambda: not active_pulses())
             await peer.send("vector-indicator", {"kind": "none"})
             await peer.barrier()
@@ -66,7 +80,7 @@ async def main(binary):
         assert not any(x.startswith("-s hassmic_pulse_") for x in lines()[before:])
         assert (device.root / "privacy/state").read_text().strip() == "1"
         await peer.quiet(len(peer.events), "Weather status must never enable microphones")
-    print("PASS: native white/orange/red/advisory colours, blue flood sequences, lease expiry/renewal and physical mute priority")
+    print("PASS: five message colors, white fallback, brightness boundaries, fixed weather colors, flood sequence/renewal, update isolation and mute priority")
 
 
 if __name__ == "__main__":

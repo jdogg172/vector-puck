@@ -71,6 +71,8 @@ docker compose -f compose.household.local.json ps
 
 If combining with optional Home Assistant, add the private HA mapping and token mounts from its documented Compose override **to each desired room service**, then set that room's `home_assistant_file`. Home controls remain separate, explicitly allowlisted and initially dry-run. The base `compose.homeassistant.yaml` targets the single-room service and is not automatically merged into these new room services.
 
+A separately managed family portal can read room status and manage room-local alarms and preferences through the optional [Unix socket management API](ROOM_MANAGEMENT.md).
+
 ## Using it
 
 | Request | Behavior |

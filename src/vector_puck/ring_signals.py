@@ -68,14 +68,18 @@ class IndicatorLease:
     """Renew before native expiry; do not restart an animation every half second."""
 
     def __init__(self):
-        self.kind = None
+        self.style = None
         self.renew_at = 0.0
 
     def due(self, indicator, *, now=None):
         now = time.monotonic() if now is None else now
-        return indicator["kind"] != self.kind or ("duration_ms" in indicator and now >= self.renew_at)
+        return self._style(indicator) != self.style or ("duration_ms" in indicator and now >= self.renew_at)
+
+    @staticmethod
+    def _style(indicator):
+        return indicator["kind"], indicator.get("brightness_pct"), indicator.get("color")
 
     def sent(self, indicator, *, now=None):
         now = time.monotonic() if now is None else now
-        self.kind = indicator["kind"]
+        self.style = self._style(indicator)
         self.renew_at = now + min(20, indicator.get("duration_ms", 60000) / 2000)

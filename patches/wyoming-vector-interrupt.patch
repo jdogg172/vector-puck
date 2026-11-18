@@ -3,7 +3,7 @@ index 01b0b10..b86d6ee 100644
 --- a/src/hassmic/audio_file.c
 +++ b/src/hassmic/audio_file.c
 @@ -239,7 +239,9 @@ void vol_write(enum vol which, int v)
-
+ 
  /* No front end on the PC.  HASSMIC_FAKE_AFE=<ms>:<voice>:<ambient> plays one that answers the wake word's energies
   * after <ms> (an Echo Show 5's took 240 and 380 ms, issue #77), for SIGUSR1's wake word too (wake_none.c) */
 -void afe_listening(int on) { (void)on; }
@@ -14,22 +14,56 @@ index 01b0b10..b86d6ee 100644
  int  afe_arbitration(long ts, long te, char *json, size_t n)
  {
 diff --git a/src/hassmic/core.h b/src/hassmic/core.h
-index 79e8be5..9dd4e9b 100644
+index 79e8be5..ff5f268 100644
 --- a/src/hassmic/core.h
 +++ b/src/hassmic/core.h
-@@ -150,6 +150,7 @@ enum { WAKE_AMAZON, WAKE_MWW, WAKE_HA };       /* WAKE_HA: Home Assistant listen
+@@ -150,6 +150,10 @@ enum { WAKE_AMAZON, WAKE_MWW, WAKE_HA };       /* WAKE_HA: Home Assistant listen
  int  core_wake_engine(int set);
  const char *core_wake_refused(void);             /* lock held: why the last core_wake_engine(set) did not take */
  void core_remote_wake(void);                     /* lock held: Home Assistant heard the wake word (WAKE_HA) */
++int  core_vector_focus_supported(void);
++void core_vector_question(void);                 /* lock held: promote the active overlap to a question */
++void core_vector_focus(void);                    /* lock held: visual lease on an open overlap stream */
 +void core_vector_stop(void);                     /* lock held: cancel only the assistant's current reply/request */
  void core_wake_models_changed(void);         /* not the lock: a model was added, changed or deleted (mww_store.c) */
  int  core_eq(int band);                          /* speaker equalizer, 0 bass / 1 mid / 2 treble: -6..+6 dB */
  void core_set_eq(int band, int db);              /* the mixer keeps it across reboots */
 diff --git a/src/hassmic/main.c b/src/hassmic/main.c
-index a89aef2..e542f92 100644
+index a89aef2..6719cf1 100644
 --- a/src/hassmic/main.c
 +++ b/src/hassmic/main.c
-@@ -757,6 +757,8 @@ static int wake_fails;                              /* lock held: wake word runs
+@@ -397,11 +397,28 @@ static void led(const char *op, const char *pattern)
+  * single active animation: with two or more (mics-off_on, a ringing timer) it composes a fresh, unturned one.
+  * Checked on a Dot 2 with lipc-set-prop -i com.amazon.ledd BeamDirection N (the same path): the cyan pair moves by N
+  * LEDs, the "ca-" patterns never move. */
++int core_vector_focus_supported(void)
++{
++    return proto == &proto_wyoming && (!strcmp(board.codename, "biscuit") || !strcmp(board.codename, "radar"));
++}
++
++static long long vector_focus_until;        /* core_lock, monotonic milliseconds */
++
++static void end_vector_focus(void)
++{
++    if (!vector_focus_until) return;
++    vector_focus_until = 0;
++    ring_vector_listen(0);
++}
++
+ static void led_for(enum state from, enum state to)
+ {
+     static const char *const pattern[] = { NULL, "active-start", "active-thinking", "active-talking" };
+-    if (pattern[from]) led("-u", pattern[from]);
+-    if (pattern[to]) led("-s", pattern[to]);
++    if (vector_focus_until) end_vector_focus();
++    else if (from == LISTENING && core_vector_focus_supported()) ring_vector_listen(0);
++    else if (pattern[from]) led("-u", pattern[from]);
++    if (to == LISTENING && core_vector_focus_supported()) ring_vector_listen(1);
++    else if (pattern[to]) led("-s", pattern[to]);
+     else if (from != IDLE) led("-s", "active-end");
+ }
+ 
+@@ -757,6 +774,8 @@ static int wake_fails;                              /* lock held: wake word runs
  static int follow_up;                               /* lock held: the pipeline now starting is a follow-up to a question */
  static void pipeline_start(uint64_t from)    /* from: where the wake word that starts it ended, 0: not a wake word */
  {
@@ -38,7 +72,7 @@ index a89aef2..e542f92 100644
      run_over = 0; wake_wait = 0;
      quiet_abort = 0;
      mic_fresh = 1;
-@@ -827,7 +829,8 @@ void core_remote_wake(void)
+@@ -827,7 +846,8 @@ void core_remote_wake(void)
  static void wake_listen(void)
  {
      if (core_local_wake || !run_over || state != SPEAKING || atomic_load(&streaming) || atomic_load(&flush_playback) ||
@@ -48,7 +82,7 @@ index a89aef2..e542f92 100644
      pipeline_start(0);
      wake_wait = 1;
  }
-@@ -1071,9 +1074,16 @@ static void mute_update(int was, int sound)   /* lock held: ring, sound + Home A
+@@ -1071,9 +1091,16 @@ static void mute_update(int was, int sound)   /* lock held: ring, sound + Home A
      int now = core_muted();
      if (now == was) return;
      if (sound) sound_request(now ? SND_MICS_OFF : SND_MICS_ON);
@@ -64,9 +98,9 @@ index a89aef2..e542f92 100644
 +    if (!now && proto == &proto_wyoming && !core_local_wake && connected && satellite_running &&
 +        state == IDLE && !atomic_load(&streaming)) pipeline_start(0);
  }
-
+ 
  int core_soft_mute(int set)
-@@ -2164,6 +2174,13 @@ static void *playback_thread(void *arg)
+@@ -2164,6 +2191,13 @@ static void *playback_thread(void *arg)
              atomic_store(&tts_on, 0); playback_hint();
              pthread_mutex_lock(&core_lock);
              atomic_store(&flush_playback, 0);       /* under the lock: a wake word between would cut the next reply */
@@ -80,13 +114,35 @@ index a89aef2..e542f92 100644
              if (proto->played) proto->played();      /* also without a client: modules reset their state here */
              if (wake_cut) wake_cut = 0;              /* cut for Home Assistant's wake word: its run is the request (core_remote_wake) */
              else core_pipeline_finish();
-@@ -2195,6 +2212,23 @@ void core_tts_abandoned(void) { wake_cut = 0; }
+@@ -2195,6 +2229,45 @@ void core_tts_abandoned(void) { wake_cut = 0; }
  int  core_tts_flushing(void) { return atomic_load(&flush_playback); }
  void core_tts_flush(void) { atomic_store(&flush_playback, 1); }
-
+ 
++static int vector_overlap_open(void)
++{
++    return state == SPEAKING && wake_wait && connected && satellite_running && atomic_load(&streaming) &&
++           !atomic_load(&flush_playback) && !core_muted();
++}
++
++/* The controller has recognized a question on the open overlap stream. The old
++ * reply's single audio-stop is still owed; core_remote_wake preserves this run across it. */
++void core_vector_question(void)
++{
++    if (core_vector_focus_supported() && vector_overlap_open()) core_remote_wake();
++}
++
++void core_vector_focus(void)
++{
++    if (!core_vector_focus_supported() || vector_focus_until || !vector_overlap_open()) return;
++    vector_focus_until = mono_ms() + 8000;
++    led("-u", "active-talking");
++    ring_vector_listen(1);
++}
++
 +void core_vector_stop(void)
 +{
 +    if (proto != &proto_wyoming || (state != SPEAKING && state != THINKING)) return;
++    end_vector_focus();
 +    atomic_store(&flush_playback, 1);
 +    atomic_store(&streaming, 0);
 +    mic_stopped();
@@ -104,7 +160,7 @@ index a89aef2..e542f92 100644
  size_t core_tts_queued(void)
  {
      pthread_mutex_lock(&q_lock); size_t n = q_bytes; pthread_mutex_unlock(&q_lock);
-@@ -2686,6 +2720,11 @@ static void on_action(void)
+@@ -2686,6 +2759,11 @@ static void on_action(void)
      if (dropin_running() && dropin_button()) return;    /* a Drop In rang (answered) or ran (ended) */
      pthread_mutex_lock(&core_lock);
      int busy = state == LISTENING || state == THINKING;
@@ -116,7 +172,20 @@ index a89aef2..e542f92 100644
      pthread_mutex_unlock(&core_lock);
      if (!busy && (a2dp_button(0) || (core_sendspin_port && sendspin_button()) || a2dp_button(1))) return;
      atomic_store(&trigger_pending, 2);                  /* 2: touch */
-@@ -3443,7 +3482,7 @@ static void *capture_thread(void *arg)
+@@ -3279,6 +3357,12 @@ static void *volume_led_thread(void *arg)
+         }
+         at = atomic_load(&identify_until);
+         if (at && mono_ms() >= at && atomic_compare_exchange_strong(&identify_until, &at, 0)) led("-u", "zzz_rainbow");
++        pthread_mutex_lock(&core_lock);
++        if (vector_focus_until && (mono_ms() >= vector_focus_until || !vector_overlap_open())) {
++            end_vector_focus();
++            if (state == SPEAKING && !core_muted()) led("-s", "active-talking");
++        }
++        pthread_mutex_unlock(&core_lock);
+         ring_tick();
+         if (tick % 5 == 0) rd_tick();               /* root's answer to designs applied on the settings page */
+         usleep(200000);
+@@ -3443,7 +3527,7 @@ static void *capture_thread(void *arg)
              align_ahead();                              /* outside the lock: it takes up to ~0.1 s on an Echo */
              pthread_mutex_lock(&core_lock);
              uint64_t at = cap_clock() - n / 2;
@@ -126,10 +195,10 @@ index a89aef2..e542f92 100644
                  else {                                      /* after the wake word: from its tail's end, this block included */
                      int64_t from = word_tail_end(replay_from, at + n / 2);
 diff --git a/src/hassmic/proto_wyoming.c b/src/hassmic/proto_wyoming.c
-index a59718d..57195e0 100644
+index a59718d..df4cd3a 100644
 --- a/src/hassmic/proto_wyoming.c
 +++ b/src/hassmic/proto_wyoming.c
-@@ -3,14 +3,31 @@
+@@ -3,14 +3,32 @@
  #include <string.h>
  #include <sys/socket.h>
  #include <time.h>
@@ -137,14 +206,15 @@ index a59718d..57195e0 100644
 +#include <unistd.h>
  #include "board.h"
  #include "core.h"
++#include "json.h"
  #include "screen.h"
 +#include "sounds.h"
 +#include "ring.h"
 +#include "statefile.h"
  #include "wyoming.h"
-
+ 
  #define TTS_RATE 22050      /* assumed when audio-start carries no rate */
-
+ 
  static int client = -1;
 +static char alarm_id[40];
 +
@@ -158,10 +228,10 @@ index a59718d..57195e0 100644
 +{
 +    return strlen(id) == 32 && strspn(id, "0123456789abcdef") == 32;
 +}
-
+ 
  static void send_event(const char *type, const char *data, const void *payload, size_t len)
  {
-@@ -23,12 +40,15 @@ static void start(void)
+@@ -23,12 +41,15 @@ static void start(void)
      char data[256];
      snprintf(data, sizeof data,
               "{\"start_stage\":\"%s\",\"end_stage\":\"tts\",\"restart_on_end\":false%s}",
@@ -170,7 +240,7 @@ index a59718d..57195e0 100644
 +             core_state() == SPEAKING ? ",\"vector_barge_in\":true" : "");
      send_event("run-pipeline", data, NULL, 0);
  }
-
+ 
  static void audio(const void *pcm, size_t len)
  {
 +    /* core_lock held: cover live/replayed PCM and recheck the hardware latch at each send. */
@@ -178,9 +248,9 @@ index a59718d..57195e0 100644
      char data[96]; struct timespec ts;
      clock_gettime(CLOCK_MONOTONIC, &ts);
      snprintf(data, sizeof data, "{\"rate\":16000,\"width\":2,\"channels\":1,\"timestamp\":%lld}",
-@@ -37,17 +57,77 @@ static void audio(const void *pcm, size_t len)
+@@ -37,17 +58,131 @@ static void audio(const void *pcm, size_t len)
  }
-
+ 
  static void played(void) { send_event("played", NULL, NULL, 0); }
 +static void cancel(void) { send_event("vector-cancel", NULL, NULL, 0); }
 +static void mute_changed(int muted)
@@ -200,6 +270,58 @@ index a59718d..57195e0 100644
 +    send_event("vector-alarm-state", ringing ? "{\"ringing\":true}" : "{\"ringing\":false}", NULL, 0);
 +}
 +
++/* Wyoming carries data inline in the header or in a separately framed JSON object. */
++static int event_data(struct json *j, const char *event)
++{
++    const char *body = strchr(event, '\n'), *text = body ? body + 1 : event;
++    if (json_parse(j, text, strlen(text))) return -1;
++    return body ? 0 : json_get(j, 0, "data");
++}
++
++static void run_satellite(const char *event)
++{
++    if (core_vector_focus_supported()) {
++        struct json j = {0};
++        int data = event_data(&j, event), token = json_get(&j, data, "vector_ring_offset_deg");
++        int degrees = 181;              /* use the local device setting */
++        if (json_type(&j, token) == J_NUM) {
++            const char *p = j.s + j.t[token].start, *end = j.s + j.t[token].end;
++            long long v = json_int(&j, token, 181);
++            if (*p == '-') ++p;
++            if (v >= -180 && v <= 180 && strspn(p, "0123456789") == (size_t)(end - p)) degrees = (int)v;
++        }
++        json_free(&j);
++        ring_vector_offset(degrees);
++    }
++    fprintf(stderr, "satellite: running\n");
++    core_link(1, 1);
++}
++
++static void indicator_style(const char *event, int message, struct ring_light *l)
++{
++    struct json j = {0};
++    int data = event_data(&j, event);
++    l->brightness = .8f;
++    if (message) l->r = l->g = l->b = 1;   /* unknown or missing color: white */
++    if (data >= 0) {
++        int pct = json_get(&j, data, "brightness_pct");
++        if (json_type(&j, pct) == J_NUM) {
++            const struct jtok *t = &j.t[pct];
++            long long value = json_int(&j, pct, 0);
++            if (value >= 20 && value <= 100 && strspn(j.s + t->start, "0123456789") == (size_t)(t->end - t->start))
++                l->brightness = (float)value / 100;
++        }
++        if (message) {
++            int c = json_get(&j, data, "color");
++            if (json_streq(&j, c, "cyan")) l->r = 0;
++            else if (json_streq(&j, c, "green")) l->r = l->b = 0;
++            else if (json_streq(&j, c, "violet")) { l->r = .5f; l->g = 0; }
++            else if (json_streq(&j, c, "amber")) { l->g = .75f; l->b = 0; }
++        }
++    }
++    json_free(&j);
++}
++
 +/* Status light only: the ring module preserves stock mute/listening/alarm priority. */
 +static void indicator(const char *json)
 +{
@@ -213,9 +335,10 @@ index a59718d..57195e0 100644
 +        wy_json_int(json, "duration_ms", &duration);
 +        if (duration < 1 || duration > 90000) return;
 +        l.on = 1; l.duration_ms = (unsigned)duration;
-+        if (!strcmp(kind, "message")) l.r = l.g = l.b = 1;
-+        else if (!strcmp(kind, "flood-advisory")) l.b = 1;
-+        else {
++        int message = !strcmp(kind, "message");
++        indicator_style(json, message, &l);
++        if (!strcmp(kind, "flood-advisory")) l.b = 1;
++        else if (!message) {
 +            l.r = 1;
 +            if (strstr(kind, "watch")) l.g = .55f;
 +            else if (!strcmp(kind, "advisory")) l.g = 1;
@@ -238,7 +361,7 @@ index a59718d..57195e0 100644
 +    else if (strcmp(kind, "none")) return;
 +    ring_light_set(&l, 0);
 +}
-
+ 
  static void send_info(void)
  {
 -    char data[1024];
@@ -254,15 +377,17 @@ index a59718d..57195e0 100644
               "\"area\":null,\"has_vad\":false,\"active_wake_words\":[%s],\"max_active_wake_words\":1,"
 -             "\"supports_trigger\":true}}",
 -             core_name, board.model, core_local_wake ? "\"alexa\"" : "");
-+             "\"supports_trigger\":true,\"vector_controls\":2,\"vector_barge_in\":true,\"vector_indicator\":true,\"vector_update_indicator\":true,\"vector_weather_indicator\":true,\"vector_alarm\":true,\"vector_alarm_dismissed\":\"%s\",\"vector_muted\":%s}}",
-+             core_name, board.model, core_local_wake ? "\"alexa\"" : "", dismissed, core_muted() ? "true" : "false");
++             "\"supports_trigger\":true,\"vector_controls\":2,\"vector_barge_in\":true,\"vector_focus\":%s,\"vector_question\":%s,\"vector_indicator\":true,\"vector_update_indicator\":true,\"vector_weather_indicator\":true,\"vector_alarm\":true,\"vector_alarm_dismissed\":\"%s\",\"vector_muted\":%s}}",
++             core_name, board.model, core_local_wake ? "\"alexa\"" : "",
++             core_vector_focus_supported() ? "true" : "false", core_vector_focus_supported() ? "true" : "false", dismissed, core_muted() ? "true" : "false");
      send_event("info", data, NULL, 0);
  }
-
-@@ -59,9 +139,37 @@ static void handle(const struct wy_event *ev)
+ 
+@@ -59,9 +194,40 @@ static void handle(const struct wy_event *ev)
      pthread_mutex_lock(&core_lock);
      if (!strcmp(t, "ping")) send_event("pong", NULL, NULL, 0);
      else if (!strcmp(t, "describe")) send_info();
+-    else if (!strcmp(t, "run-satellite")) { fprintf(stderr, "satellite: running\n"); core_link(1, 1); }
 +    else if (!strcmp(t, "vector-indicator")) indicator(ev->json);
 +    else if (!strcmp(t, "vector-alarm")) {
 +        char action[16] = "", id[40] = "", name[64] = "";
@@ -276,10 +401,12 @@ index a59718d..57195e0 100644
 +            core_timer_finished(id, name, 0);
 +        } else if (!strcmp(action, "stop") && alarm_id_ok(id)) core_timer_cancelled(id);
 +    }
-     else if (!strcmp(t, "run-satellite")) { fprintf(stderr, "satellite: running\n"); core_link(1, 1); }
++    else if (!strcmp(t, "run-satellite")) run_satellite(ev->json);
      else if (!strcmp(t, "pause-satellite")) core_link_pause();
 -    else if (!strcmp(t, "detection")) core_set_state(LISTENING);
 +    else if (!strcmp(t, "vector-listen")) core_run_over();
++    else if (!strcmp(t, "vector-question")) core_vector_question();
++    else if (!strcmp(t, "vector-focus")) core_vector_focus();
 +    else if (!strcmp(t, "vector-stop")) {
 +        char names[256];
 +        long preserve_alarm = 0; wy_json_int(ev->json, "preserve_alarm", &preserve_alarm);
@@ -292,16 +419,17 @@ index a59718d..57195e0 100644
 +        /* A server wake must also hold the talker's beam and AFE utterance mode,
 +         * as ESPHome's EV_WAKE_END does. A ring-only state change lets the
 +         * cancellers adapt the command away after the first second or two. */
-+        if (core_local_wake) core_set_state(LISTENING);
++        if (core_state() == SPEAKING && core_vector_focus_supported()) core_vector_focus();
++        else if (core_local_wake) core_set_state(LISTENING);
 +        else core_remote_wake();
 +    }
      else if (!strcmp(t, "voice-stopped") || !strcmp(t, "transcript")) {
          if (!strcmp(t, "transcript")) {
              char text[256] = "";
-@@ -111,4 +219,8 @@ static void print_mdns(void)
+@@ -111,4 +277,8 @@ static void print_mdns(void)
             "  <service><type>_wyoming._tcp</type><port>%d</port></service>\n</service-group>\n", core_name, core_port);
  }
-
+ 
 -const struct proto proto_wyoming = { "wyoming", 16700, 0, serve, start, audio, NULL, NULL, played, NULL, NULL, print_mdns, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
 +const struct proto proto_wyoming = {
 +    .id = "wyoming", .port = 16700, .threaded = 0, .serve = serve,
@@ -309,10 +437,19 @@ index a59718d..57195e0 100644
 +    .played = played, .mute_changed = mute_changed, .timers_changed = alarm_changed, .print_mdns = print_mdns
 +};
 diff --git a/src/hassmic/ring.c b/src/hassmic/ring.c
-index 5523ab7..8837e87 100644
+index 5523ab7..7b22147 100644
 --- a/src/hassmic/ring.c
 +++ b/src/hassmic/ring.c
-@@ -743,7 +743,7 @@ static int slot_avail[RING_SLOTS_MAX], slot_on[RING_SLOTS_MAX];         /* of th
+@@ -36,6 +36,8 @@
+  * applies (root then installs the set again and restarts ledcontroller): a design edited meanwhile does not change it.
+  */
+ #include "ring.h"
++#include "buttons.h"
++#include "core.h"
+ #include "ringdesign.h"
+ #include "board.h"
+ #include "hash.h"
+@@ -743,9 +745,12 @@ static int slot_avail[RING_SLOTS_MAX], slot_on[RING_SLOTS_MAX];         /* of th
  static struct shown { char logical[40], actual[40]; long long at; int ms, turn; } shown[SHOWN_MAX];   /* ms < 0: until unset */
  static int nshown;
  static struct ring_light light = { .brightness = 1, .color_brightness = 1, .r = 1, .g = 1, .b = 1, .effect = E_NONE, .fill = 100 };
@@ -320,8 +457,48 @@ index 5523ab7..8837e87 100644
 +static struct ring_light flash; static long long flash_until, light_until, light_started;
  static char light_shown[48];                /* what of ours is on the ring for the light, "" none */
  static char led_shown[MAX_LEDS][32];        /* and on each LED's own layer (a fill), "" none */
++static int vector_listening, have_neutral;  /* protected by the ring lock */
++static int vector_offset, vector_beam = -1, beam_worker, vector_trace;
++static pthread_cond_t beam_wake = PTHREAD_COND_INITIALIZER;
  static int rotation;                        /* the fill's start, in LEDs from stock's */
-@@ -855,9 +855,15 @@ static void quantize(const struct ring_light *l, struct colour *c)
+ 
+ static long long now_ms(void)
+@@ -851,19 +856,63 @@ static void quantize(const struct ring_light *l, struct colour *c)
+     c->level = v >= 0.75f ? 0 : v >= 0.4f ? 1 : 2;
+ }
+ 
++/* The held stock frame on both 12-LED boards has cyan pixels 10 and 11.
++ * LedDevice advances that pair by BeamDirection, exactly as turned() does.
++ * Where a stock timer/call/volume layer is active, use the original listening
++ * layer so the compositor retains its normal priorities. */
++static void vector_lights(long long now, char *want, size_t cap, char wled[][32])
++{
++    if (find("mics-off_on")) return;
++    int foreground = busy(now);
++    if (vector_beam < 0) {
++        if (custom && !foreground) snprintf(want, cap, "hassmic_solid_12f2");
++        else snprintf(want, cap, "%s", have_neutral ? "ntt-listening" : "solid_cyan");
++        return;
++    }
++    /* BeamDirection already counts LED turns. The eight internal mic groups
++     * have been mapped by the vendor before this interface. */
++    int half = (2 * vector_beam + (int)lround(vector_offset / 15.0) + 24) % 24;
++    int first = (10 + half / 2) % 12;
++    if (have_leds && leds == 12 && !foreground) {
++        /* At a half step the centre falls on an LED. Equal shoulders keep the
++         * optical centre there without jumping to either neighbouring pair. */
++        int between = half % 2;
++        for (int i = 0; i < 2 + between; ++i) {
++            int pixel = (first + i) % 12, level = between && i != 1 ? 1 : 0;
++            snprintf(wled[pixel], 32, "hassmic_led_%d_12f%d", pixel, level);
++        }
++    } else if ((have_turned || slot_on[S_LISTEN]) && leds == 12) {
++        int turn = (vector_beam + (int)lround(vector_offset / 30.0) + 12) % 12;
++        snprintf(want, cap, slot_on[S_LISTEN] ? "hassmic_s_hold_%d" : "hassmic_hold_%d", turn);
++    } else snprintf(want, cap, "%s", vector_offset ? (have_neutral ? "ntt-listening" : "solid_cyan") : "active-start");
++}
++
+ /* lock held: the light on the ring as it should be now */
  static void light_apply(long long now)
  {
      char want[48] = "", wled[MAX_LEDS][32];
@@ -337,7 +514,210 @@ index 5523ab7..8837e87 100644
      memset(wled, 0, sizeof wled);
      /* The fill: that share of the LEDs, rounded up (1 % one LED, all of them only at 100 %), from where stock's volume
       * steps start (volume_step-01 lights LED 11, -05 LEDs 11 and 0, -10 LEDs 11 to 2) turned by the rotation.  A part
-@@ -1104,7 +1110,15 @@ void ring_light_set(const struct ring_light *l, unsigned flash_ms)
+      * of the ring is each LED's own solid pattern, so the effects are the whole ring's only; a flash blinks it whole */
+     int lit = (l->fill * leds + 99) / 100, start = (leds - 1 + rotation) % leds;
+-    if (custom && have_leds && l->on && !flashing && !busy(now) && l->nleds > 0) {     /* LED by LED, each in the palette's nearest */
++    /* The keypad latch can lead its callback. Clear the directional pair and
++     * keep a waiting status dark throughout that gap. Soft mute uses mics-off_on. */
++    int privacy = (vector_listening || l->on || flashing) && core_vector_focus_supported() && buttons_muted();
++    int available = !privacy && !busy(now);
++    if (vector_listening) {
++        if (!privacy) vector_lights(now, want, sizeof want, wled);
++    }
++    else if (custom && have_leds && l->on && !flashing && available && l->nleds > 0) {     /* LED by LED, each in the palette's nearest */
+         for (int j = 0; j < l->nleds && j < leds; j++) {
+             struct ring_light t = *l; struct colour c; char code[8]; int i = (start + j) % leds;
+             const unsigned char *p = l->led_rgb[j];
+@@ -873,7 +922,7 @@ static void light_apply(long long now)
+             snprintf(wled[i], sizeof wled[i], "hassmic_led_%d_%s", i, code);
+         }
+     }
+-    else if (custom && (l->on || flashing) && !busy(now) && lit > 0) {
++    else if (custom && (l->on || flashing) && available && lit > 0) {
+         struct colour c; quantize(l, &c);
+         if (lit >= leds || flashing || !have_leds) light_pattern(flashing ? E_BLINK : l->effect, &c, want, sizeof want);
+         else {
+@@ -885,10 +934,12 @@ static void light_apply(long long now)
+     changed = strcmp(want, light_shown) != 0;
+     for (int i = 0; i < leds; i++) { changed |= strcmp(wled[i], led_shown[i]) != 0; nled += wled[i][0] != 0; }
+     if (!changed) return;
+-    if (want[0]) fprintf(stderr, "light ring: Home Assistant's light %s%s\n", want, flashing ? " (flash)" : "");
+-    else if (nled) fprintf(stderr, "light ring: Home Assistant's light on %d LED%s from %d%s\n", nled, nled == 1 ? "" : "s", start,
+-                           l->nleds > 0 && !flashing ? ", LED by LED" : "");
+-    else fprintf(stderr, "light ring: Home Assistant's light %s\n", !l->on && !flashing ? "off" : busy(now) ? "waits for the Echo's own" : "dark");
++    if (!vector_listening) {
++        if (want[0]) fprintf(stderr, "light ring: Home Assistant's light %s%s\n", want, flashing ? " (flash)" : "");
++        else if (nled) fprintf(stderr, "light ring: Home Assistant's light on %d LED%s from %d%s\n", nled, nled == 1 ? "" : "s", start,
++                               l->nleds > 0 && !flashing ? ", LED by LED" : "");
++        else fprintf(stderr, "light ring: Home Assistant's light %s\n", !l->on && !flashing ? "off" : !available ? "waits for the Echo's own" : "dark");
++    }
+     /* Every new one on before an old one goes: the ring is never dark between two colours or two fills */
+     if (want[0] && strcmp(want, light_shown)) run("-s", want);
+     for (int i = 0; i < leds; i++) if (wled[i][0] && strcmp(wled[i], led_shown[i])) run("-s", wled[i]);
+@@ -896,9 +947,42 @@ static void light_apply(long long now)
+     for (int i = 0; i < leds; i++) if (led_shown[i][0] && strcmp(wled[i], led_shown[i])) run("-u", led_shown[i]);
+     snprintf(light_shown, sizeof light_shown, "%s", want);
+     memcpy(led_shown, wled, sizeof wled);
++    if (vector_listening && vector_trace && !privacy) {
++        fprintf(stderr, "vector ring: t=%lld queued beam=%d offset_deg=%d pattern=%s",
++                now_ms(), vector_beam, vector_offset, want[0] ? want : "per-led");
++        for (int i = 0; i < leds; ++i) if (wled[i][0]) fprintf(stderr, " %s", wled[i]);
++        fputc('\n', stderr);
++    }
+     light_remember();
+ }
+ 
++/* ring lock held. ledcontroller's integer is a ring index; reject degree
++ * values, sentinels and other out-of-range reports instead of folding them. */
++static int vector_read_beam(void)
++{
++    int raw = find("mics-off_on") || buttons_muted() ? -1 : beam_now();
++    int beam = raw >= 0 && raw < 12 ? raw : -1;
++    if (beam == vector_beam) return 0;
++    vector_beam = beam;
++    if (vector_trace) fprintf(stderr, "vector ring: t=%lld beam=%d correction_deg=%d\n", now_ms(), raw, vector_offset);
++    return 1;
++}
++
++/* Active-only sampling, independent of volume_sync and the status LED timer.
++ * The first sample is synchronous on wake. A stopped session produces no frames. */
++static void *vector_track(void *unused)
++{
++    (void)unused;
++    for (;;) {
++        pthread_mutex_lock(&lock);
++        while (!vector_listening) pthread_cond_wait(&beam_wake, &lock);
++        if (vector_read_beam()) light_apply(now_ms());
++        pthread_mutex_unlock(&lock);
++        usleep(40000);
++    }
++    return NULL;
++}
++
+ /* What the installed set is (not under the lock: 0.1 s on the Echo): ours if its digest is this build's of the designs
+  * known installed (state/ring-installed), or of those asked for (state/ring-applied): root installed them, at a start
+  * or for the page, and they are the installed ones from now on.  Then which slots play designs.  -1: no set could be
+@@ -923,6 +1007,9 @@ static int installed(struct gen *g)
+ 
+ static void take(const struct gen *g, int ours)
+ {
++    char file[512];
++    path(file, sizeof file, "led-resources/ntt-listening.animation");
++    have_neutral = access(file, R_OK) == 0;
+     custom = ours > 0;
+     have_turned = custom && g->turned;
+     have_assist = custom && g->assist;
+@@ -937,6 +1024,11 @@ void ring_start(void (*fn)(const char *op, const char *name), void (*reloaded)(i
+     run_fn = fn; reloaded_fn = reloaded;
+     int ours = installed(&g);
+     take(&g, ours);
++    if (core_vector_focus_supported()) {
++        pthread_t worker;
++        beam_worker = !pthread_create(&worker, NULL, vector_track, NULL);
++        if (beam_worker) pthread_detach(worker);
++    }
+     int nd = 0; for (int i = 0; i < ring_nslots; i++) nd += slot_on[i];
+     if (custom) fprintf(stderr, "ring: our animations are installed (%d files, designs in %d place%s)%s\n", g.files, nd, nd == 1 ? "" : "s",
+                         have_turned ? "" : ", the listening ring not turned");
+@@ -949,7 +1041,9 @@ void ring_start(void (*fn)(const char *op, const char *name), void (*reloaded)(i
+     const char *d = getenv("HASSMIC_STATE"); char left[48] = ""; FILE *f;   /* this light from before a restart */
+     snprintf(file, sizeof file, "%s/ring-light", d ? d : "/data/local/hassmic/state");
+     if ((f = fopen(file, "r"))) {
+-        for (int i = 0; i <= MAX_LEDS && fscanf(f, "%47s", left) == 1; i++) if (!strncmp(left, "hassmic_", 8)) run("-u", left);
++        for (int i = 0; i <= MAX_LEDS && fscanf(f, "%47s", left) == 1; i++) {
++            if (!strncmp(left, "hassmic_", 8) || !strcmp(left, "active-start") || !strcmp(left, "ntt-listening") || !strcmp(left, "solid_cyan")) run("-u", left);
++        }
+         fclose(f); unlink(file);
+     }
+ }
+@@ -1006,6 +1100,48 @@ static void actual_for(const char *pattern, int turn, char out[40])
+     else snprintf(out, 40, "%s", pattern);
+ }
+ 
++/* Read each puck's own calibration on run-satellite. A valid room override
++ * applies to this run only. Neither source changes the Home Assistant fill. */
++void ring_vector_offset(int degrees)
++{
++    const char *dir = getenv("HASSMIC_STATE"); char file[512], value[16], extra;
++    if (!dir) dir = "/data/local/hassmic/state";
++    if (degrees < -180 || degrees > 180) {
++        snprintf(file, sizeof file, "%s/vector-ring-offset-deg", dir);
++        FILE *f = fopen(file, "r");
++        degrees = 0;
++        if (f) {
++            if (fgets(value, sizeof value, f) && fgetc(f) == EOF) {
++                char *end; long n = strtol(value, &end, 10);
++                if (end != value && n >= -180 && n <= 180 && sscanf(end, " %c", &extra) != 1) degrees = (int)n;
++            }
++            fclose(f);
++        }
++    }
++    snprintf(file, sizeof file, "%s/vector-ring-trace", dir);
++    pthread_mutex_lock(&lock);
++    vector_trace = access(file, F_OK) == 0;
++    vector_offset = degrees;
++    if (vector_listening) light_apply(now_ms());
++    pthread_mutex_unlock(&lock);
++}
++
++void ring_vector_listen(int on)
++{
++    pthread_mutex_lock(&lock);
++    vector_listening = on;
++    /* On exit the next foreground pattern or ring_tick applies the new frame.
++     * This avoids flashing a waiting background light between conversation states. */
++    if (on) {
++        vector_beam = -1;
++        if (vector_trace) fprintf(stderr, "vector ring: t=%lld start correction_deg=%d\n", now_ms(), vector_offset);
++        vector_read_beam();
++        light_apply(now_ms());
++        pthread_cond_signal(&beam_wake);
++    }
++    pthread_mutex_unlock(&lock);
++}
++
+ void ring_set(const char *pattern)
+ {
+     char actual[40]; int turn = -1;
+@@ -1015,6 +1151,17 @@ void ring_set(const char *pattern)
+     /* A design with the beam not known yet: at turn 0, and ring_tick turns it once the beam is there.  Stock's own
+      * then: stock's name, which ledcontroller turns by itself while nothing else shows */
+     if (ring && turn < 0 && slot_on[pattern[7] == 's' ? S_LISTEN : S_END]) turn = 0;
++    if (vector_offset && core_vector_focus_supported() && !strcmp(pattern, "active-end")) {
++        /* Closing frames have only whole turns. Without a calibrated asset,
++         * skip the directional closing flash and let the background resume. */
++        int b = beam_now();
++        if (leds != 12 || b < 0 || b >= 12 || !(have_turned || slot_on[S_END])) {
++            light_apply(now_ms());
++            pthread_mutex_unlock(&lock);
++            return;
++        }
++        turn = (b + (int)lround(vector_offset / 30.0) + 12) % 12;
++    }
+     actual_for(pattern, turn, actual);
+     struct shown *s = find(pattern);
+     if (s && strcmp(s->actual, actual)) run("-u", s->actual);
+@@ -1059,6 +1206,7 @@ void ring_tick(void)
+             run("-s", s->actual); run("-u", was);
+         }
+     }
++    if (vector_listening && !beam_worker) vector_read_beam();
+     light_apply(now);
+     pthread_mutex_unlock(&lock);
+ }
+@@ -1086,7 +1234,10 @@ void ring_reload(void)
+     }
+     int any = light_shown[0];
+     for (int i = 0; i < MAX_LEDS; i++) any |= led_shown[i][0];
+-    if (any && !custom) { light_shown[0] = 0; memset(led_shown, 0, sizeof led_shown); light_remember(); }
++    if (vector_listening) {
++        light_shown[0] = 0; memset(led_shown, 0, sizeof led_shown);
++        light_apply(now);
++    } else if (any && !custom) { light_shown[0] = 0; memset(led_shown, 0, sizeof led_shown); light_remember(); }
+     else if (any) {
+         if (light_shown[0]) run("-s", light_shown);
+         for (int i = 0; i < MAX_LEDS; i++) if (led_shown[i][0]) run("-s", led_shown[i]);
+@@ -1104,7 +1255,15 @@ void ring_light_set(const struct ring_light *l, unsigned flash_ms)
  {
      pthread_mutex_lock(&lock);
      if (flash_ms) { flash = *l; flash.on = 1; flash_until = now_ms() + flash_ms; }
@@ -355,11 +735,11 @@ index 5523ab7..8837e87 100644
      light.fill = light.fill < 0 ? 0 : light.fill > 100 ? 100 : light.fill;
      if (light.nleds < 0 || light.nleds > MAX_LEDS) light.nleds = 0;
 diff --git a/src/hassmic/ring.h b/src/hassmic/ring.h
-index 5cf0c91..c06dd1c 100644
+index 5cf0c91..bdfa41f 100644
 --- a/src/hassmic/ring.h
 +++ b/src/hassmic/ring.h
 @@ -10,6 +10,8 @@
-
+ 
  struct ring_light {
      int on;
 +    int alternate_blue;                     /* alternate one full 2.4-second pulse with blue */
@@ -367,3 +747,30 @@ index 5cf0c91..c06dd1c 100644
      float brightness, color_brightness;     /* 0..1, as Home Assistant sends them */
      float r, g, b;                          /* 0..1, the largest 1 */
      int effect;                             /* index in ring_effects */
+@@ -35,6 +37,8 @@ int  ring_per_led(void);                    /* and each LED's own layer: the fil
+ /* The Echo's own patterns (stock's names): while one shows, Home Assistant's light is off.  "active-start" and
+  * "active-end" are played turned towards the talker (ours) where we can read the beam */
+ void ring_set(const char *pattern);
++void ring_vector_offset(int degrees);        /* clockwise seen from above, -180..180; outside: local state file */
++void ring_vector_listen(int on);            /* foreground listening or visual-only reply focus on biscuit/radar */
+ /* Where a design (ringdesign.h) can take the place of stock's: one slot per pattern the core plays (RING_VOLUME: each
+  * "volume_step-NN", RING_ASSIST: each "hassmic_assist_NN"; both take the colours of the design's first frame through
+  * stock's steps).  RING_LISTEN and RING_END are turned towards the talker as stock's are: listening's copies held at
+diff --git a/src/hassmic/ring_band.c b/src/hassmic/ring_band.c
+index 2c054ed..034d811 100644
+--- a/src/hassmic/ring_band.c
++++ b/src/hassmic/ring_band.c
+@@ -772,6 +772,13 @@ void ring_reload(void)
+     fprintf(stderr, "band: designs in %d place%s\n", nd, nd == 1 ? "" : "s");
+ }
+ 
++void ring_vector_offset(int degrees) { (void)degrees; }
++
++void ring_vector_listen(int on)
++{
++    if (on) ring_set("active-start"); else ring_unset("active-start");
++}
++
+ void ring_set(const char *pattern)
+ {
+     int arg, i = find(pattern, &arg);

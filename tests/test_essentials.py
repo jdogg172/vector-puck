@@ -137,7 +137,8 @@ class EssentialsTests(unittest.TestCase):
             "No sound was started", self.handle("sleep_sound", "play thunderstorm", **args)
         )
         self.features.playback_ready = True
-        self.assertIn("10 hours", self.handle("sleep_sound", "play thunderstorm", **args))
+        self.assertEqual(self.handle("sleep_sound", "play thunderstorm", **args),
+                         "Playing thunderstorm sounds for ten hours.")
         self.now += 90
         restored = SleepState(self.root / "kitchen/sleep.sqlite3", clock=lambda: self.now)
         self.assertEqual(restored.get()["ends"], 1036000)
@@ -150,6 +151,49 @@ class EssentialsTests(unittest.TestCase):
                 restored.start("rain", seconds)
         self.now += 36000
         self.assertIsNone(restored.get())
+
+    def test_storm_fast_paths_return_exact_cached_phrases(self):
+        self.features.playback_ready = True
+        for utterance, reply, seconds in [
+            ("play storm sounds for a minute", "Playing thunderstorm sounds for one minute.", 60),
+            ("play thunderstorm sounds for ten hours", "Playing thunderstorm sounds for ten hours.", 36000),
+            ("play thunderstorms", "Playing thunderstorm sounds for ten hours.", 36000),
+        ]:
+            with self.subTest(utterance=utterance):
+                tool, args = self.features.fast_path(utterance)
+                self.assertEqual(self.handle(tool, utterance, **args), reply)
+                self.assertEqual(self.features.sleep.get()["ends"], self.now + seconds)
+
+    def test_generic_sleep_confirmations_omit_empty_units_and_keep_partial_minutes(self):
+        self.features.playback_ready = True
+        for sound, seconds, reply in [
+            ("rain", None, "Playing rain sounds for ten hours."),
+            ("white noise", 3600, "Playing white noise for 1 hour."),
+            ("brown noise", 5400, "Playing brown noise for 1 hour and 30 minutes."),
+            ("rain", 61, "Playing rain sounds for 1 minute and 1 second."),
+        ]:
+            with self.subTest(sound=sound, seconds=seconds):
+                self.assertEqual(self.handle("sleep_sound", f"play {sound}", action="start",
+                                             sound=sound, seconds=seconds, level=None), reply)
+
+    def test_brief_pause_and_resume_preserve_the_deadline_and_report_time_left(self):
+        self.features.playback_ready = True
+        self.features.sleep.start("rain", 5460)
+        deadline = self.features.sleep.get()["ends"]
+        for elapsed, utterance, reply in [
+            (60, "pause sleep sounds", "Sleep sounds paused."),
+            (0, "sleep sound status", "Rain is paused. The session ends in about 1 hour and 30 minutes."),
+            (5370, "resume sleep sounds", "Resuming sleep sounds."),
+            (0, "sleep sound status", "The rain session ends in less than a minute."),
+        ]:
+            with self.subTest(utterance=utterance, elapsed=elapsed):
+                self.now += elapsed
+                tool, args = self.features.fast_path(utterance)
+                self.assertEqual(self.handle(tool, utterance, **args), reply)
+                self.assertEqual(self.features.sleep.get()["ends"], deadline)
+        self.now = deadline
+        tool, args = self.features.fast_path("resume sleep sounds")
+        self.assertEqual(self.handle(tool, "resume sleep sounds", **args), "No sleep sound is active.")
 
     def test_fast_paths_do_not_need_a_model_and_do_not_match_negations(self):
         for phrase, tool in [

@@ -32,6 +32,7 @@ class Config:
     experimental_spoken_stop: bool = True
     home_assistant_file: str = ""
     household_file: str = ""
+    management_socket_dir: str = ""
 
     def __post_init__(self):
         if self.hardware not in {"echo-dot2-rs03qr-biscuit", "echo2-xc56py-radar"}:
@@ -70,6 +71,12 @@ class Config:
         if (not isinstance(self.household_file, str)
                 or (self.household_file and not Path(self.household_file).is_absolute())):
             raise ValueError("household_file must be empty or an absolute path")
+        directory = self.management_socket_dir
+        if not isinstance(directory, str) or (directory and not re.fullmatch(
+                r"(/(?!\.{1,2}(?:/|$))[^/\x00]+)+/?", directory)):
+            raise ValueError("management_socket_dir must be empty or a dedicated absolute path")
+        if directory and not self.household_file:
+            raise ValueError("Room management requires household_file for the room ID and alarms")
 
     @classmethod
     def load(cls, path: Path) -> Config:
