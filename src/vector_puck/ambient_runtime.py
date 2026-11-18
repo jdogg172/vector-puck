@@ -37,10 +37,12 @@ class AmbientRuntime:
             return f"There is a {weather.replace('-', ' ')}; its signal is {colour}. Ask for the current weather alerts for official instructions. Clearing delivery notices will not clear it."
         if room and room.household.call():
             return "There is a room call. The receiving room can say answer call or decline call."
+        room_api = getattr(s, "room_api", None) or getattr(getattr(s, "dialogue", None), "room_api", None)
+        color = room_api.preferences()["color"] if room_api else "white"
         if room and room.household.pending_messages():
-            return "The white pulse means there are pending room messages."
+            return f"The {color} pulse means there are pending room messages."
         if self.essentials.notices.pending():
-            return "The white pulse means there are unread delivery notices. Ask me to read notifications, or clear delivery notifications."
+            return f"The {color} pulse means there are unread delivery notices. Ask me to read notifications, or clear delivery notifications."
         updates = getattr(s, "updates", None)
         update = updates.indicator()["kind"] if updates else "none"
         if update == "update":

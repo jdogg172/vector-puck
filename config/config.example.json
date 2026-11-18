@@ -20,5 +20,6 @@
   "working_sound": true,
   "experimental_spoken_stop": true,
   "home_assistant_file": "",
-  "household_file": ""
+  "household_file": "",
+  "management_socket_dir": ""
 }

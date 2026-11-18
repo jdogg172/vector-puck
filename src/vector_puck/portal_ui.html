@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f6f5ef"><title>Vector · Room controls</title>
+  <link rel="stylesheet" href="/portal.css"><script defer src="/portal.js"></script>
+</head>
+<body>
+<header><div class="brand"><i class="ring" aria-hidden="true"></i>Vector</div><button id="logout" class="quiet" hidden>Sign out</button></header>
+<main>
+  <p id="notice" role="status" aria-live="polite"></p>
+  <section id="signin" hidden>
+    <h1>Room controls</h1><p class="intro">Manage your household’s alarms, light rings and game spoiler settings.</p>
+    <button id="login" class="primary">Sign in with Home Assistant</button>
+    <form id="redeem" class="panel">
+      <h2>Pair this phone</h2>
+      <label for="code">Code from the household owner</label>
+      <div class="row"><input id="code" required type="text" inputmode="numeric" pattern="[0-9]{8}" maxlength="8" autocomplete="off" placeholder="8 digits"><button>Pair phone</button></div>
+    </form>
+  </section>
+  <section id="dashboard" hidden>
+    <div class="room-head"><div><label for="room">Room</label><select id="room"></select></div><button id="refresh" class="quiet">Refresh</button></div>
+    <div class="readout"><span class="status-dot" aria-hidden="true"></span><span id="status" role="status">Loading room…</span></div>
+    <div id="controls" hidden>
+      <section class="panel"><div class="section-head"><h1>Alarms</h1><button id="add" class="primary">Add alarm</button></div>
+        <p class="hint">Times follow this room’s clock.</p><ul id="alarms"></ul><p id="empty" hidden>No alarms scheduled.</p>
+      </section>
+      <form id="preferences" class="panel"><h2>Room preferences</h2>
+        <div class="grid"><label>Ring brightness<select id="brightness"><option value="20">Low · 20%</option><option value="50">Medium · 50%</option><option value="80">Bright · 80%</option></select></label>
+        <label>Message color<select id="color"><option value="white">White</option><option value="cyan">Cyan</option><option value="green">Green</option><option value="violet">Violet</option><option value="amber">Amber</option></select></label></div>
+        <label>Game spoilers<select id="spoilers"><option value="ask">Ask before sharing</option><option value="avoid">Avoid spoilers</option><option value="allow">Allow spoilers</option></select></label>
+        <button id="savePrefs">Save preferences</button>
+      </form>
+    </div>
+    <section id="family" hidden class="panel"><div class="section-head"><h2>Caregiver phones</h2><button id="refreshPhones" class="quiet">Refresh phones</button></div><ul id="phones"></ul><form id="issue"><label>Phone label<input id="phoneLabel" required maxlength="60" autocomplete="off" placeholder="Caregiver phone"></label><button>Get pairing code</button></form></section>
+  </section>
+  <button id="retry" hidden>Try again</button>
+</main>
+<dialog id="editor" aria-labelledby="editorTitle"><form id="alarmForm">
+  <div class="section-head"><h2 id="editorTitle">Add alarm</h2><button class="quiet" type="button" data-close="editor">Close</button></div>
+  <label>Alarm name<input id="alarmName" maxlength="60" required autocomplete="off"></label>
+  <div class="grid"><label>Time<input type="time" id="at" required></label>
+    <label>Repeat<select id="repeat"><option value="next">Next occurrence</option><option value="date">Specific date</option><option value="days">Weekly</option></select></label></div>
+  <label id="dateRow" hidden>Date<input type="date" id="onDate"></label>
+  <fieldset id="week" hidden><legend>Repeat on</legend><div id="days"></div></fieldset>
+  <p id="formError" role="alert"></p><button class="primary" id="saveAlarm">Save alarm</button>
+</form></dialog>
+<dialog id="actionDialog" aria-labelledby="actionTitle"><form id="actionForm">
+  <h2 id="actionTitle"></h2><p id="actionText"></p>
+  <label id="snoozeRow" hidden>Snooze minutes<input type="number" id="snoozeMinutes" min="1" max="60" value="9"></label>
+  <p id="actionError" role="alert"></p>
+  <div class="row"><button type="button" data-close="actionDialog">Back</button><button class="primary" id="confirmAction">Confirm</button></div>
+</form></dialog>
+<dialog id="pairDialog" aria-labelledby="pairTitle"><h2 id="pairTitle">Pair a caregiver phone</h2>
+  <p>Enter this code on the other phone’s Vector sign-in screen within five minutes.</p>
+  <output id="pairCode"></output><p>Room access lasts 30 days. You can revoke it here at any time.</p>
+  <button type="button" data-close="pairDialog">Done</button>
+</dialog>
+</body></html>

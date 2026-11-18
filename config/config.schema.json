@@ -125,6 +125,20 @@
       "type": "string",
       "default": "",
       "description": "Empty disables household features; otherwise an absolute path to a private same-host rooms configuration."
+    },
+    "management_socket_dir": {
+      "type": "string",
+      "default": "",
+      "pattern": "^(?:(/(?!\\.{1,2}(?:/|$))[^/\\u0000]+)+/?)?$",
+      "description": "Optional absolute path to a dedicated same-UID directory for room management sockets."
     }
+  },
+  "if": {
+    "required": ["management_socket_dir"],
+    "properties": {"management_socket_dir": {"minLength": 1}}
+  },
+  "then": {
+    "required": ["household_file"],
+    "properties": {"household_file": {"pattern": "^/"}}
   }
 }

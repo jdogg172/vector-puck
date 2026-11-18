@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- On supported Echo rings, saying the wake phrase during a reply briefly lights the side facing the speaker while the answer continues. An actual follow-up question takes the turn. An addressed stop still stops playback.
+- Notification pulses now use the brightest of the three available hardware levels by default. Each room can choose a message color and brightness. Weather keeps its watch and warning colors.
+- The local mobile portal shares the speaker’s alarm clock. Select a room to add a one-time or recurring alarm, edit or cancel it, or snooze or dismiss a ringing alarm. Room settings include message color, notification brightness and game spoilers. Caregiver pairing gives another phone access to Vector room controls.
+
+- Open the Pokédex or the Hyrule field guide by voice for hints, quizzes and lore. Time-sensitive game questions use a read-only search of official publisher sites. Vector asks about spoilers by default and keeps household data out of game searches.
+
+- Ordinary and household replies now share guidance for warm, everyday speech. Cedar's verbatim reading instructions call for playful timing for family jokes, gentle bedtime speech and plain, clear alerts.
+- Sleep sounds get a short start, pause or resume reply. Durations omit empty units, and the one-minute and ten-hour thunderstorm acknowledgments keep their exact wording for cached speech.
 - Thunderstorm sleep sessions can play a locally stored CC0 field recording with a crossfaded loop and bounded peaks. The player keeps audio packets full across the file boundary. “Play storm sounds for one minute” starts a short audition. Installation and recording credits are in [Kitchen](docs/KITCHEN.md#sleep-sounds).
 
 ### Weather and notification ring signals

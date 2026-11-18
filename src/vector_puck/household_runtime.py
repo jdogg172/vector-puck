@@ -18,6 +18,7 @@ from .resident import status
 
 from .update_indicator import choose_indicator
 from .ring_signals import IndicatorLease, native_weather, weather_indicator
+from .room_management import decorate_indicator
 
 RATE = 16000
 HEADER = struct.Struct("!16sQd")
@@ -440,6 +441,9 @@ class RoomRuntime:
                         capable=getattr(s, "native_weather_indicator", False))
                     indicator = choose_indicator(weather=weather, call=incoming,
                         alarm=bool(self.alarms and self.alarms.ringing()), messages=messages, update=update)
+                    room_api = getattr(getattr(s, "dialogue", None), "room_api", None)
+                    if room_api:
+                        indicator = decorate_indicator(indicator, room_api.preferences())
                     if self.indicator_lease.due(indicator):
                         await s.send('vector-indicator', indicator)
                         self.indicator_lease.sent(indicator)

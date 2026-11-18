@@ -7,6 +7,7 @@ import re
 
 from .ambient import SOUNDS, SleepState
 from .cookbook import Cookbook
+from .kitchen import duration
 from .notices import Notices
 from .units import convert
 
@@ -116,6 +117,11 @@ def tools():
 NAMES = {t["name"] for t in tools()}
 
 
+def sleep_duration(seconds: int) -> str:
+    # These two spellings are part of the cached thunderstorm acknowledgments.
+    return {60: "one minute", 36000: "ten hours"}.get(seconds) or duration(seconds)
+
+
 def direct_change(text):
     """A local gate; a tool proposal is never its own mutation authorization."""
     text = text.lower().replace("’", "'")
@@ -170,9 +176,8 @@ class Essentials:
             return None
         words = re.sub(r"^hey[ ,]+(?:vector|victor)[ ,]*", "", text.casefold()).strip(" .!?")
         words = re.sub(r"^please\s+|\s+please$", "", words)
-        words = re.sub(r"\b(?:thunderstorms?|storm sounds?)\b", "thunderstorm", words)
-        if words in {"play thunderstorm for a minute", "play thunderstorm for one minute",
-                     "play thunderstorm sounds for a minute", "play thunderstorm sounds for one minute"}:
+        words = re.sub(r"\b(?:thunderstorms?(?: sounds?)?|storm sounds?)\b", "thunderstorm", words)
+        if words in {"play thunderstorm for a minute", "play thunderstorm for one minute"}:
             return "sleep_sound", dict(action="start", sound="thunderstorm", seconds=60, level=30)
         for name in SOUNDS:
             if words in {
@@ -270,7 +275,9 @@ class Essentials:
                     args["level"] if args["level"] is not None else 30,
                     guard,
                 )
-                return f"Queued {args['sound']} for {seconds // 3600} hours and {(seconds % 3600) // 60} minutes on this speaker. It starts after this reply. Say stop sleep sounds to end it."
+                sound = args["sound"]
+                label = f"{sound} sounds" if sound in {"rain", "thunderstorm"} else sound
+                return f"Playing {label} for {sleep_duration(seconds)}."
             if action in {"stop", "pause", "resume"}:
                 if action == "resume" and not self.playback_ready:
                     return "Local sleep playback isn't connected to this speaker. Nothing resumed."
@@ -279,19 +286,21 @@ class Essentials:
                     return "No sleep sound is active."
                 return {
                     "stop": "Stopped the sleep sounds.",
-                    "pause": "Paused the sleep sounds. The original end time is unchanged.",
-                    "resume": "Queued the sleep sounds to resume after this reply, until the original end time.",
+                    "pause": "Sleep sounds paused.",
+                    "resume": "Resuming sleep sounds.",
                 }[action]
             if action != "status":
                 raise ValueError("Invalid sleep action")
             value = self.sleep.get()
-            return (
-                "No sleep sound is active."
-                if not value
-                else ("Paused " if value["paused"] else "Scheduled ")
-                + value["sound"]
-                + f" with about {max(0, round((value['ends'] - self.sleep.clock()) / 60))} minutes left."
-            )
+            if not value:
+                return "No sleep sound is active."
+            remaining = value["ends"] - self.sleep.clock()
+            left = "less than a minute"
+            if remaining >= 60:
+                left = f"about {sleep_duration(round(remaining / 60) * 60)}"
+            if value["paused"]:
+                return f"{value['sound'].capitalize()} is paused. The session ends in {left}."
+            return f"The {value['sound']} session ends in {left}."
         if name == "notification_status":
             if action == "ring":
                 return (
