@@ -47,7 +47,7 @@
     },
     "conversation_model": {
       "type": "string",
-      "default": "gpt-6-astra",
+      "default": "gpt-6.2-sol",
       "pattern": "^[a-zA-Z0-9._-]{1,80}$"
     },
     "voice_model": {

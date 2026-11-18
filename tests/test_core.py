@@ -94,7 +94,11 @@ class FramingTests(unittest.IsolatedAsyncioTestCase):
 class ConfigAndStateTests(unittest.TestCase):
     def test_default_models_and_hardware(self):
         config = Config()
-        self.assertEqual(config.conversation_model, "gpt-6-astra")
+        example = json.loads((ROOT / "config" / "config.example.json").read_text())
+        schema = json.loads((ROOT / "config" / "config.schema.json").read_text())
+        self.assertEqual(config.conversation_model, example["conversation_model"])
+        self.assertEqual(config.conversation_model,
+                         schema["properties"]["conversation_model"]["default"])
         self.assertEqual(config.voice_model, "gpt-realtime-2.1-mini")
         self.assertEqual(config.voice, "cedar")
         self.assertTrue(config.experimental_spoken_stop)

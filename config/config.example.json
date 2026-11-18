@@ -6,7 +6,7 @@
   "vosk_model": "/models/vosk-model-small-en-us-0.15",
   "whisper_model": "/models/faster-whisper-base.en",
   "cpu_threads": 4,
-  "conversation_model": "gpt-6-astra",
+  "conversation_model": "gpt-6.2-sol",
   "voice_model": "gpt-realtime-2.1-mini",
   "voice": "cedar",
   "key_file": "/run/secrets/openai_key",

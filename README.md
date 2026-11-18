@@ -24,7 +24,7 @@ This is a community experiment for hardware owners. The controller and patches a
 - A data-capable micro-USB cable. USB is needed for setup and updating; normal operation uses Wi-Fi and power.
 - Linux x86_64 for the documented build/install path, with Git, Make, `curl`, `unzip`, `sha256sum`, Android `adb`, Python 3.12+, Docker Engine, and Docker Compose v2.
 - A Linux Docker host with at least 4 GB RAM available and four CPU threads recommended. CPU recognition may be slower than a GPU-equipped system. The container has a 2 GB memory limit.
-- Your own OpenAI API project/key with access to the configured models. API charges are separate from a ChatGPT subscription. Defaults are `gpt-6-astra` for answers and `gpt-realtime-2.1-mini` for Cedar speech; both requests can incur charges.
+- Your own OpenAI API project/key with access to the configured models. API charges are separate from a ChatGPT subscription. Defaults are `gpt-6.2-sol` for answers and `gpt-realtime-2.1-mini` for Cedar speech; both requests can incur charges.
 
 Only one Wyoming controller should connect to the puck. Disconnect an existing Home Assistant Wyoming integration before using this controller.
 
