@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Kitchen and light-ring features
+
+- Original local rain, thunderstorm, white-noise and brown-noise playback with a durable deadline, ten-hour default, bounded level and one-minute-to-twelve-hour limit. No long-form paid API audio or downloaded sound recordings.
+- Background sound yields to voice, calls, messages, timers and alarms. Physical mute, Action and spoken stop pause it durably; restart/reconnect preserves only the original active deadline.
+- Versioned saved AI-draft recipes, ingredient/serving scaling, persistent room-specific cooking steps and explicit additions to the shared shopping list. Scaling never multiplies temperatures/times or invents ingredient density.
+- Local deterministic conversions, including unambiguous US cooking volume and temperature, with mass/fluid-ounce separation and density refusal.
+- Private status-only delivery inbox foundation, with strict ingress, hashed event IDs, deduplication, expiry and dismissal. No retailer/email/account adapter is connected.
+- RGB/rainbow application-update animation and an eight-second green completion pulse. Both controller and native LED timeouts prevent stale status. Mute, native calls/alarms, weather status and messages retain priority; software updates are never exposed as a voice tool.
+
+### Fixes and improvements
+
+- A released conversation turn now lets the same room accept its next wake immediately; the other room still suppresses a delayed duplicate.
+- Normal-listener progress is monitored separately from network audio. An idle listener stuck waiting for a pipeline or retaining an obsolete cancellation state reconnects without unmuting.
+- Stale queued microphone packets are discarded, and physical mute/cancel clears queued audio. Follow-up speech retains turn ownership while it is being captured.
+
+- Both call participants now hear repeating local signalling: an incoming ringtone at the destination and quieter ringback at the caller.
+- The local microphone/echo-reference stream stays open across the silent ring gaps so explicitly addressed answer and decline commands work while ringing, independently of the caller's conversation lease. Only the called room can accept.
+- Accepted calls finish their ringtone with normal playback completion. They no longer send the native cancellation command that could immediately hang up the new connection.
+- Caller-name prompts no longer speak a wake phrase or an answer command into the room.
+- Calling is refused clearly when the required native microphone stream or spoken controls are disabled.
+- Added family-friendly joke, riddle and story guidance for shared-room conversation.
+
+These changes have passed isolated software and native-program tests. Physical incoming/ringback audibility, two-way acceptance, normal-seat wake/stop over ambience and overnight sleep-audio endurance remain operator checks; no hardware acceptance is declared from those tests alone.
+
 ## 0.3.0 — 2026-11-17
 
 ### Features

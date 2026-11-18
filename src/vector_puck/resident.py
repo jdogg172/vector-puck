@@ -17,6 +17,7 @@ from .spoken_stop import interruptions
 from .state import Cancelled, FollowUp, Gate
 from .transport import REPLY_FORMAT, check_audio, read_event, send_event
 from .tune import working_audio
+from .listener_state import ListenerState
 
 
 def status(event):
@@ -50,6 +51,11 @@ class Satellite:
         self.alert_played = asyncio.Event()
         self.native_alarm = self.native_indicator = self.barge_capable = False
         self.household_tasks = []
+        self.listener = ListenerState()
+        self.ambient = None
+        self.native_update_indicator = False
+        self.updates = None
+        self.native_version = None
 
     @property
     def epoch(self):
@@ -79,6 +85,8 @@ class Satellite:
             raise Cancelled("Request cancelled")
 
     async def send(self, kind, data=None, payload=b""):
+        if self.ambient and kind in {"detection", "vector-alarm", "vector-stop", "pause-satellite"}:
+            self.ambient.focus_taken(permanent=self.connected and kind in {"vector-stop", "pause-satellite"})
         async with self.write_lock:
             await send_event(self.writer, kind, data, payload)
         if kind == "audio-start":
@@ -87,7 +95,9 @@ class Satellite:
         elif kind == "audio-stop":
             self.output_open = False
 
-    def invalidate(self):
+    def invalidate(self, *, pause_sleep=True):
+        if self.ambient:
+            self.ambient.focus_taken(permanent=pause_sleep)
         self.gate.cancel()
         self.recording = False
         self.activity = "idle"
@@ -112,6 +122,9 @@ class Satellite:
                 self.last_event = time.monotonic()
                 if kind == "audio-chunk":
                     self.last_audio = self.last_event
+                    data = dict(data, _vector_received_at=self.last_event,
+                                _vector_epoch=self.gate.epoch)
+                    event = (kind, data, event[2])
                     if self.room_runtime and self.room_runtime.active and not self.gate.muted:
                         self.room_runtime.capture(data, event[2])
                 if kind == "ping":
@@ -131,7 +144,7 @@ class Satellite:
                     self.barge_stream = False
                 elif kind == "run-pipeline":
                     self.last_audio = self.last_event
-                    self.barge_stream = data.get("vector_barge_in") is True
+                    self.barge_stream = data.get("vector_barge_in") is True and not (self.ambient and self.ambient.active)
                     if self.barge_stream:
                         self.interrupt_serial += 1
                         self.interrupt_checks = {"audio_seconds": 0.0, "local_checks": 0,
@@ -139,7 +152,10 @@ class Satellite:
                         while not self.interrupt_audio.empty():
                             self.interrupt_audio.get_nowait()
                         continue  # Never interpret a stop-only stream as a conversation turn.
-                    if self.busy:
+                    if (self.room_runtime and self.room_runtime.signaling
+                            and self.alert_played.is_set()):
+                        self.room_runtime.signaling_ready.set()
+                    elif self.busy:
                         self.invalidate()
                 elif kind == "played":
                     self.speaking = self.barge_stream = False
@@ -179,18 +195,24 @@ class Satellite:
 
     def disconnect(self):
         self.gate.connected = False
-        self.invalidate()
+        self.invalidate(pause_sleep=False)
         while not self.events.empty():
             self.events.get_nowait()
         self.enqueue(("disconnected", {}, b""))
         self.writer.close()
 
     async def monitor(self, state):
+        last_update = None
         while not self.stop.is_set() and self.gate.connected:
             if any(task.done() for task in self.household_tasks):
                 self.disconnect()
                 return
             self.dialogue.expire()
+            if self.room_runtime is None and self.native_update_indicator and self.updates:
+                indicator = self.updates.indicator()
+                if indicator["kind"] != last_update:
+                    await self.send("vector-indicator", indicator)
+                    last_update = indicator["kind"]
             temp = state / "health.tmp"
             temp.write_text(json.dumps({
                 "updated": time.time(), "connected": self.gate.connected,
@@ -200,13 +222,24 @@ class Satellite:
                 "interrupt_worker_running": self.interrupt_worker_running,
                 "interrupt_listening": self.barge_stream,
                 "interrupt_checks": self.interrupt_checks.copy(),
+                "listener": self.listener.snapshot(),
+                "native_version": self.native_version,
+                "update_indicator_capable": self.native_update_indicator,
             }))
             temp.replace(state / "health.json")
             now = time.monotonic()
             stale_audio = (not self.gate.muted and not self.busy and not self.speaking
                            and now - self.last_audio > 20)
-            stuck_playback = self.speaking and now - self.speech_started > 125
-            if now - self.last_event > 20 or stale_audio or stuck_playback:
+            stuck_playback = self.speaking and self.activity != "ambient" and now - self.speech_started > 125
+            idle_listener = not (self.gate.muted or self.busy or self.speaking or self.recording
+                or self.followup.active() or self.followup.ready
+                or (self.room_runtime and (self.room_runtime.active or self.room_runtime.signaling)))
+            listener_stalled = self.listener.stalled(self.epoch, idle=idle_listener,
+                transport_fresh=now - self.last_event < 2 and now - self.last_audio < 2,
+                owns_turn=not self.hub or self.activity != "request" or self.hub.household.owns_turn())
+            if listener_stalled:
+                status("listener_recovering")
+            if listener_stalled or now - self.last_event > 20 or stale_audio or stuck_playback:
                 self.disconnect()
                 return
             if now - self.last_event > 5:
@@ -269,7 +302,8 @@ async def respond(satellite, query, epoch):
         await satellite.send("audio-start", REPLY_FORMAT)
         await paced(satellite, pcm, epoch)
         satellite.guard(epoch)
-        if satellite.hub and satellite.hub.household.call():
+        if ((satellite.hub and satellite.hub.household.call())
+                or getattr(getattr(satellite.dialogue, "essentials", None), "last_tool", None) == "sleep_sound"):
             # Call setup/answer must yield to the bridge, not an eight-second follow-up.
             satellite.followup.clear()
         else:
@@ -304,6 +338,9 @@ async def listen(satellite, speech):
         if satellite.room_runtime and satellite.room_runtime.active:
             await asyncio.sleep(.1)
             continue
+        satellite.listener.progress(
+            "waiting_pipeline" if awaiting_pipeline else "followup" if following
+            else "recording" if recorded is not None else "wake", epoch, awaiting_pipeline)
         if following and not following_started and not satellite.followup.active():
             following = False
             recorded = None
@@ -336,6 +373,15 @@ async def listen(satellite, speech):
         if kind != "audio-chunk" or awaiting_pipeline or not satellite.gate.allowed(epoch):
             continue
         check_audio(data, payload)
+        if (data.get("_vector_epoch", epoch) != epoch
+                or time.monotonic() - data.get("_vector_received_at", time.monotonic()) > 2):
+            satellite.listener.stale_packets += 1
+            if recorded is None:
+                speech.reset()
+                ring.clear()
+                size = 0
+            continue
+        satellite.listener.audio_packets += 1
         if recorded is None:
             ring.append(payload)
             size += len(payload)
@@ -343,10 +389,15 @@ async def listen(satellite, speech):
                 size -= len(ring.popleft())
             if not speech.wake_candidate(payload):
                 continue
+            satellite.recording = True
+            satellite.listener.progress("confirming_wake", epoch)
             candidate = await asyncio.to_thread(speech.transcribe, b"".join(ring))
             if not satellite.gate.allowed(epoch):
+                satellite.recording = False
                 continue
             if question(candidate, satellite.config.wake_phrase) is None:
+                satellite.recording = False
+                satellite.listener.rejected_wakes += 1
                 speech.reset()
                 ring.clear()
                 size = 0
@@ -355,10 +406,12 @@ async def listen(satellite, speech):
                 from .spoken_stop import audio_level
                 quality = audio_level(b"".join(ring)[-32000:])
                 if not await satellite.room_runtime.wake(quality):
+                    satellite.recording = False
                     speech.reset()
                     ring.clear()
                     size = 0
                     continue
+            satellite.listener.confirmed_wakes += 1
             await satellite.send("detection", {"name": satellite.config.wake_phrase})
             recorded = list(ring)
             satellite.recording = True
@@ -370,6 +423,7 @@ async def listen(satellite, speech):
                 continue
             satellite.followup.consume()
             following_started = True
+            satellite.recording = True
         if not speech.endpoint_ready(payload, post / 32000):
             continue
         satellite.busy = True
@@ -384,7 +438,8 @@ async def listen(satellite, speech):
                 await satellite.finish()
                 continue
             direct_alarm = (satellite.hub and satellite.hub.fast_path(query))
-            if done(query) and not direct_alarm:
+            direct_basic = satellite.dialogue.essentials.fast_path(query)
+            if done(query) and not direct_alarm and not direct_basic:
                 satellite.followup.clear()
                 satellite.dialogue.clear()
                 await satellite.finish()
@@ -429,9 +484,15 @@ async def session(config, speech, dialogue, stop, state):
         satellite.barge_capable = details.get("vector_barge_in") is True
         satellite.native_alarm = details.get("vector_alarm") is True
         satellite.native_indicator = details.get("vector_indicator") is True
+        from .update_indicator import UpdateIndicator
+        satellite.updates = UpdateIndicator(state)
+        satellite.native_update_indicator = details.get("vector_update_indicator") is True
+        satellite.native_version = details.get("version")
         if satellite.hub:
             from .household_runtime import RoomRuntime
             satellite.hub.alarm_ready = satellite.native_alarm
+            satellite.hub.call_ready = (satellite.barge_capable
+                                       and config.experimental_spoken_stop)
             dismissed = details.get("vector_alarm_dismissed")
             if isinstance(dismissed, str) and dismissed:
                 satellite.hub.alarms.dismiss_ringing(dismissed)
@@ -442,6 +503,10 @@ async def session(config, speech, dialogue, stop, state):
             tasks.extend(satellite.household_tasks)
         if config.experimental_spoken_stop:
             tasks.append(asyncio.create_task(interruptions(satellite, speech)))
+        from .ambient_runtime import AmbientRuntime
+        satellite.ambient = AmbientRuntime(dialogue.essentials, satellite,
+                                          kitchen=satellite.hub.kitchen if satellite.hub else None)
+        tasks.append(asyncio.create_task(satellite.ambient.run()))
         tasks.extend([asyncio.create_task(satellite.pump()),
                       asyncio.create_task(satellite.monitor(state))])
         if not satellite.gate.muted:
@@ -450,7 +515,7 @@ async def session(config, speech, dialogue, stop, state):
         await listen(satellite, speech)
     finally:
         satellite.gate.connected = False
-        satellite.invalidate()
+        satellite.invalidate(pause_sleep=False)
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

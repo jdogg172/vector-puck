@@ -126,7 +126,7 @@ index a89aef2..e542f92 100644
                  else {                                      /* after the wake word: from its tail's end, this block included */
                      int64_t from = word_tail_end(replay_from, at + n / 2);
 diff --git a/src/hassmic/proto_wyoming.c b/src/hassmic/proto_wyoming.c
-index a59718d..7f735c6 100644
+index a59718d..e67ae51 100644
 --- a/src/hassmic/proto_wyoming.c
 +++ b/src/hassmic/proto_wyoming.c
 @@ -3,14 +3,31 @@
@@ -178,7 +178,7 @@ index a59718d..7f735c6 100644
      char data[96]; struct timespec ts;
      clock_gettime(CLOCK_MONOTONIC, &ts);
      snprintf(data, sizeof data, "{\"rate\":16000,\"width\":2,\"channels\":1,\"timestamp\":%lld}",
-@@ -37,17 +57,52 @@ static void audio(const void *pcm, size_t len)
+@@ -37,17 +57,65 @@ static void audio(const void *pcm, size_t len)
  }
 
  static void played(void) { send_event("played", NULL, NULL, 0); }
@@ -210,6 +210,19 @@ index a59718d..7f735c6 100644
 +    else if (!strcmp(kind, "watch")) { l.on = 1; l.r = 1; l.g = .55f; }
 +    else if (!strcmp(kind, "warning")) { l.on = 1; l.r = 1; l.g = .08f; }
 +    else if (!strcmp(kind, "advisory")) { l.on = 1; l.b = 1; l.g = .15f; }
++    else if (!strcmp(kind, "update") || !strcmp(kind, "updated")) {
++        long duration = !strcmp(kind, "update") ? 300000 : 8000;
++        wy_json_int(json, "duration_ms", &duration);
++        long maximum = !strcmp(kind, "update") ? 900000 : 15000;
++        if (duration < 1 || duration > maximum) return;
++        l.on = 1; l.duration_ms = (unsigned)duration;
++        if (!strcmp(kind, "updated")) { l.g = 1; }  /* short green pulse */
++        else {
++            l.r = 1;
++            for (int i = 0; i < ring_neffects; i++)
++                if (!strcmp(ring_effects[i], "Rainbow")) { l.effect = i; break; }
++        }
++    }
 +    else if (strcmp(kind, "none")) return;
 +    ring_light_set(&l, 0);
 +}
@@ -229,12 +242,12 @@ index a59718d..7f735c6 100644
               "\"area\":null,\"has_vad\":false,\"active_wake_words\":[%s],\"max_active_wake_words\":1,"
 -             "\"supports_trigger\":true}}",
 -             core_name, board.model, core_local_wake ? "\"alexa\"" : "");
-+             "\"supports_trigger\":true,\"vector_controls\":2,\"vector_barge_in\":true,\"vector_indicator\":true,\"vector_alarm\":true,\"vector_alarm_dismissed\":\"%s\",\"vector_muted\":%s}}",
++             "\"supports_trigger\":true,\"vector_controls\":2,\"vector_barge_in\":true,\"vector_indicator\":true,\"vector_update_indicator\":true,\"vector_alarm\":true,\"vector_alarm_dismissed\":\"%s\",\"vector_muted\":%s}}",
 +             core_name, board.model, core_local_wake ? "\"alexa\"" : "", dismissed, core_muted() ? "true" : "false");
      send_event("info", data, NULL, 0);
  }
 
-@@ -59,9 +114,37 @@ static void handle(const struct wy_event *ev)
+@@ -59,9 +127,37 @@ static void handle(const struct wy_event *ev)
      pthread_mutex_lock(&core_lock);
      if (!strcmp(t, "ping")) send_event("pong", NULL, NULL, 0);
      else if (!strcmp(t, "describe")) send_info();
@@ -273,7 +286,7 @@ index a59718d..7f735c6 100644
      else if (!strcmp(t, "voice-stopped") || !strcmp(t, "transcript")) {
          if (!strcmp(t, "transcript")) {
              char text[256] = "";
-@@ -111,4 +194,8 @@ static void print_mdns(void)
+@@ -111,4 +207,8 @@ static void print_mdns(void)
             "  <service><type>_wyoming._tcp</type><port>%d</port></service>\n</service-group>\n", core_name, core_port);
  }
 
@@ -283,3 +296,48 @@ index a59718d..7f735c6 100644
 +    .start = start, .audio = audio, .stop = cancel, .cancel = cancel,
 +    .played = played, .mute_changed = mute_changed, .timers_changed = alarm_changed, .print_mdns = print_mdns
 +};
+diff --git a/src/hassmic/ring.c b/src/hassmic/ring.c
+index 5523ab7..3eaeccc 100644
+--- a/src/hassmic/ring.c
++++ b/src/hassmic/ring.c
+@@ -743,7 +743,7 @@ static int slot_avail[RING_SLOTS_MAX], slot_on[RING_SLOTS_MAX];         /* of th
+ static struct shown { char logical[40], actual[40]; long long at; int ms, turn; } shown[SHOWN_MAX];   /* ms < 0: until unset */
+ static int nshown;
+ static struct ring_light light = { .brightness = 1, .color_brightness = 1, .r = 1, .g = 1, .b = 1, .effect = E_NONE, .fill = 100 };
+-static struct ring_light flash; static long long flash_until;
++static struct ring_light flash; static long long flash_until, light_until;
+ static char light_shown[48];                /* what of ours is on the ring for the light, "" none */
+ static char led_shown[MAX_LEDS][32];        /* and on each LED's own layer (a fill), "" none */
+ static int rotation;                        /* the fill's start, in LEDs from stock's */
+@@ -855,6 +855,7 @@ static void quantize(const struct ring_light *l, struct colour *c)
+ static void light_apply(long long now)
+ {
+     char want[48] = "", wled[MAX_LEDS][32];
++    if (light_until && now >= light_until) { light.on = 0; light_until = 0; }
+     int flashing = flash_until && now < flash_until, changed = 0;
+     if (!flashing) flash_until = 0;
+     const struct ring_light *l = flashing ? &flash : &light;
+@@ -1104,7 +1105,10 @@ void ring_light_set(const struct ring_light *l, unsigned flash_ms)
+ {
+     pthread_mutex_lock(&lock);
+     if (flash_ms) { flash = *l; flash.on = 1; flash_until = now_ms() + flash_ms; }
+-    else { light = *l; flash_until = 0; }
++    else { light = *l; flash_until = 0;
++        unsigned duration = l->duration_ms > 900000 ? 900000 : l->duration_ms;
++        light_until = duration ? now_ms() + duration : 0;
++    }
+     if (light.effect < 0 || light.effect >= E_COUNT) light.effect = E_NONE;
+     light.fill = light.fill < 0 ? 0 : light.fill > 100 ? 100 : light.fill;
+     if (light.nleds < 0 || light.nleds > MAX_LEDS) light.nleds = 0;
+diff --git a/src/hassmic/ring.h b/src/hassmic/ring.h
+index 5cf0c91..43167ad 100644
+--- a/src/hassmic/ring.h
++++ b/src/hassmic/ring.h
+@@ -10,6 +10,7 @@
+
+ struct ring_light {
+     int on;
++    unsigned duration_ms;                    /* 0: persistent; background status auto-expires */
+     float brightness, color_brightness;     /* 0..1, as Home Assistant sends them */
+     float r, g, b;                          /* 0..1, the largest 1 */
+     int effect;                             /* index in ring_effects */

@@ -55,6 +55,13 @@ class HouseholdTest(unittest.TestCase):
         self.assertTrue(self.b.owns_turn())
         self.assertFalse(self.a.nominate(1, 0.01))
 
+    def test_released_turn_tail_only_suppresses_the_other_room(self):
+        self.assertTrue(self.a.nominate(.1, .01))
+        self.a.release()
+        self.assertFalse(self.b.nominate(.2, .01))
+        self.assertTrue(self.a.nominate(.1, .01))
+        self.assertTrue(self.a.owns_turn())
+
     def test_muted_candidate_cannot_win_and_does_not_block_other(self):
         self.b.heartbeat(muted=True, busy=False)
         with ThreadPoolExecutor(2) as pool:

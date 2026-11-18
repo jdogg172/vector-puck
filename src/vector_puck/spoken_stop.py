@@ -10,6 +10,7 @@ import re
 import time
 
 from .transport import check_audio
+from .call_signaling import call_control
 
 
 def addresses(wake_phrase: str) -> list[str]:
@@ -22,7 +23,8 @@ def addresses(wake_phrase: str) -> list[str]:
 
 def stop_phrases(wake_phrase: str) -> list[str]:
     return [f"{name} {command}" for name in addresses(wake_phrase)
-            for command in ("stop", "cancel", "be quiet", "hang up", "end call")]
+            for command in ("stop", "cancel", "be quiet", "hang up", "end call",
+                            "answer call", "answer the call", "pick up", "decline call")]
 
 
 def interrupt_requested(text: str, wake_phrase: str) -> bool:
@@ -102,7 +104,9 @@ async def interrupt_loop(satellite, speech):
         ended = detector.AcceptWaveform(wake_audio(payload))
         result = json.loads(detector.Result() if ended else detector.PartialResult())
         words = result.get("text" if ended else "partial", "")
-        stable = stable + 1 if interrupt_requested(words, phrase) else 0
+        stable = stable + 1 if (interrupt_requested(words, phrase) or
+            (satellite.room_runtime and satellite.room_runtime.signaling and
+             call_control(words, phrase))) else 0
         level = audio_level(payload)
         stats["max_rms"] = round(max(level, stats["max_rms"]), 6)
         # Small-recognizer misses do not block independent local Whisper checks.
@@ -112,9 +116,16 @@ async def interrupt_loop(satellite, speech):
         next_check = time.monotonic() + 1.5
         stats["local_checks"] += 1
         heard = await asyncio.to_thread(speech.transcribe, wake_audio(b"".join(ring)))
-        if (satellite.barge_stream and serial == satellite.interrupt_serial
-                and satellite.gate.allowed(epoch)
-                and interrupt_requested(heard, phrase)):
+        current = (satellite.barge_stream and serial == satellite.interrupt_serial
+                   and satellite.gate.allowed(epoch))
+        action = call_control(heard, phrase)
+        handled = bool(current and action and satellite.room_runtime
+                       and satellite.room_runtime.control_call(action, epoch))
+        if handled and action == "answer":
+            stats["confirmed"] += 1
+            ring.clear()
+            size = 0
+        elif current and (interrupt_requested(heard, phrase) or handled):
             stats["confirmed"] += 1
             satellite.invalidate()
             satellite.barge_stream = False

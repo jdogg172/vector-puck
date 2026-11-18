@@ -10,6 +10,7 @@ async def main(binary):
         await peer.send("describe")
         _, e = await peer.expect("info")
         assert e[1]["satellite"]["vector_indicator"] and e[1]["satellite"]["vector_alarm"]
+        assert e[1]["satellite"]["vector_update_indicator"]
         await peer.send("run-satellite")
         ident = "a" * 32
         for action in ["button", "voice"]:
@@ -30,7 +31,7 @@ async def main(binary):
             await peer.send("describe")
             _, e = await peer.expect("info", after)
             assert e[1]["satellite"]["vector_alarm_dismissed"] == ident
-        for kind in ["message", "watch", "warning", "advisory", "none", "invalid"]:
+        for kind in ["message", "watch", "warning", "advisory", "update", "updated", "none", "invalid"]:
             await peer.send("vector-indicator", {"kind": kind})
         await peer.barrier()
         await peer.quiet(len(peer.events), "indicator must not enable microphone")

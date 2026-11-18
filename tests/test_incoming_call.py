@@ -39,6 +39,7 @@ class IncomingCallTest(unittest.IsolatedAsyncioTestCase):
             if kind == "audio-stop":
                 self.s.speaking = False
                 self.s.alert_played.set()
+                self.r.signaling_ready.set()
 
         self.s.send = send
 
@@ -46,16 +47,20 @@ class IncomingCallTest(unittest.IsolatedAsyncioTestCase):
         self.r.audio.close()
         self.tmp.cleanup()
 
-    async def test_local_ring_repeats_without_cloud_or_turn_ownership(self):
+    async def test_local_ring_keeps_the_answer_stream_open_without_turn_ownership(self):
         self.s.activity = "request"  # An expired request lease cannot block a notification.
+        self.s.barge_capable = True
         with patch("vector_puck.household_runtime.status"):
-            self.assertTrue(await self.r.ring_call(self.callee.call()))
-            first = len(self.events)
-            self.assertFalse(await self.r.ring_call(self.callee.call()))
-            self.assertEqual(len(self.events), first)
-            self.r.last_ring[self.callee.call()["id"]] -= 7
-            self.assertTrue(await self.r.ring_call(self.callee.call()))
-        self.assertGreater(len(self.events), first)
+            task = asyncio.create_task(self.r.ring_call(self.callee.call()))
+            try:
+                await asyncio.sleep(1.2)
+                self.assertFalse(task.done())
+                self.assertNotIn("audio-stop", [kind for kind, pcm in self.events])
+                self.callee.end_call()
+                self.assertTrue(await task)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
         self.assertTrue(any(kind == "audio-chunk" and any(pcm) for kind, pcm in self.events))
         self.assertIsNone(self.r.audio.call, "Ringing opened a microphone bridge before acceptance")
 
@@ -80,6 +85,11 @@ class IncomingCallTest(unittest.IsolatedAsyncioTestCase):
             await self.r.ring_call(self.callee.call())
         self.assertEqual(sum(k == "audio-chunk" for k, p in self.events), 1)
         self.assertEqual(self.callee.call()["status"], "active")
+        self.assertNotIn(
+            "vector-stop",
+            [k for k, p in self.events],
+            "Native vector-stop emits cancel and would hang up an accepted call",
+        )
 
     def test_ring_is_audible_bounded_and_uses_supported_format(self):
         rate, pcm = call_ring_audio()
