@@ -10,6 +10,8 @@ import stat
 import time
 import uuid
 
+from .ring_signals import WEATHER_KINDS
+
 
 class UpdateIndicator:
     def __init__(self, root: Path):
@@ -82,12 +84,15 @@ class UpdateIndicator:
 
 def choose_indicator(*, weather="none", call=False, alarm=False, messages=False, update=None):
     """Urgent and actionable states win; physical mute is enforced on the device."""
-    if weather in {"warning", "watch", "advisory"}:
+    if isinstance(weather, dict):
+        if weather.get("kind") in WEATHER_KINDS:
+            return weather
+    elif weather in WEATHER_KINDS:
         return {"kind": weather}
     if call or alarm:
         return {"kind": "none"}  # Native call/listen/alarm animation owns the LEDs.
     if messages:
-        return {"kind": "message"}
+        return {"kind": "message", "duration_ms": 60000}
     return update or {"kind": "none"}
 
 

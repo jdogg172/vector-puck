@@ -53,3 +53,11 @@ That removes only the override if none existed before, allowing the pre-existing
 `patches/wyoming-vector-interrupt.patch` changes six upstream source files. It fixes remote-wake continuation, reports controls version 2, carries physical mute/cancel events, keeps the microphone stream available for a separate stop recognizer, and flushes queued output on cancellation. A `vector-stop` control message also queues a short stock confirmation earcon when stopping active unmuted output. The updated patch also adds native persistent-dismissal alarm controls, status-light indications and a mute-safe remote pipeline restart. The RGB update light is a background animation with a native timeout; it yields to the existing mute/listen/alarm patterns. A green completion pulse is requested only after the trusted updater verifies reconnection. No stock sound recording is distributed.
 
 Since version 0.2 the portable Python controller sends `vector-listen` and runs an experimental local spoken-stop recognizer when `experimental_spoken_stop` is true. The independent physical Action and microphone-mute paths remain available. See [spoken-stop behavior](SPOKEN_STOP.md) and perform the required physical acceptance tests after installation.
+
+The same patch advertises `vector_weather_indicator` for the supported satellites.
+Weather and unread-notification lights now have bounded native leases, and flood
+watch/warning sequences alternate full pulses locally. Lease renewal keeps the
+sequence phase. This does not change the audio front end, microphone latch, firmware,
+bootloader, update trust keys or the existing emergency-announcement policy. The
+[signal legend and trusted weather adapter contract](KITCHEN.md#weather-and-notification-signals)
+explain how to connect a household's own fresh local alert feed.

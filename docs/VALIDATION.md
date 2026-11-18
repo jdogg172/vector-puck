@@ -121,4 +121,17 @@ The additional native LED regression is:
 python3 tests/native_update_ring_regression.py .hardware/echo-dot-assist/build/hassmic-host
 ```
 
+The subsequent weather-ring change passed 181 portable tests in a network-disabled
+Python 3.12 container, including actual room-worker command emission, stale/expired
+alert clearing, notification priority and spoken ring explanations. The patched C
+daemon also passed the weather harness below: white/orange/red/advisory colours,
+blue flood sequences, native expiry, phase-preserving renewal and privacy priority.
+The existing native mute/Action/spoken-stop, alarm and RGB harnesses passed again.
+These use fake LEDs and PCM; the flood colours still need physical visual acceptance.
+The preceding RGB demo was physically observed, with mild animation stepping.
+
+```bash
+python3 tests/native_weather_ring_regression.py .hardware/echo-dot-assist/build/hassmic-host
+```
+
 It uses synthetic LEDs/audio and a simulated privacy latch. It does not record a microphone, contact a satellite, or substitute for a physical display check.

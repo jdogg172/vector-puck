@@ -73,3 +73,27 @@ docker compose exec -T vector python -m vector_puck.update_indicator complete --
 ```
 
 This is a labeled visual demonstration; `complete` here simulates an updater's success signal and does not install or verify a release. For household deployments, use the generated room service name and its own state directory. A real updater must verify the signed application, intended model, reconnect and unchanged mute state before calling `complete`. Failed updates call `clear`; they never signal success. Public installation still uses the documented guarded USB override; this module does not expose or enable a network firmware flasher or distribute signing keys.
+
+## Weather and notification signals
+
+| Status | Background ring signal |
+|---|---|
+| Weather watch | Pulsing orange |
+| Weather warning | Pulsing red |
+| Flood watch | Alternating orange and blue pulses |
+| Flood warning | Alternating red and blue pulses |
+| Flood advisory | Pulsing blue |
+| Other weather advisory | Pulsing yellow |
+| Unread room messages or status-only delivery notices | Pulsing white |
+| Verified update completed | Brief green pulse |
+| Physical microphone mute | The existing steady red privacy indication; it covers background status |
+
+Flood sequences alternate complete 2.4-second pulses on the satellite, rather than issuing a network request for every colour. Lease renewals preserve the sequence phase. These are gentle pulses, not rapid flashes. Weather and notices do not play unsolicited audio through this visual feature. Any separately configured emergency-speech policy remains independent.
+
+Weather warnings outrank watches, which outrank advisories. Tornado, severe thunderstorm, then flood break ties within the same severity. The chosen weather state wins over ordinary notifications and update status. Native listening, speaking, calls, alarms and microphone privacy retain their foreground priority. White clears after messages are consumed/dismissed/expired; acknowledging a delivery never dismisses weather.
+
+The portable kit does **not** fetch weather automatically. A trusted local adapter supplies `RoomRuntime.set_weather_snapshot(snapshot)`; no arbitrary URL or account access is added. The snapshot uses `available: true`, `stale: false`, a Unix `valid_until`, and `data.items` containing public `event`, Unix `effective_at` and `expires_at` values. Only current, fresh watch/warning/advisory events are shown. The household integration uses its existing local cached National Weather Service feed.
+
+Each native weather/notification lease is at most 60 seconds and is renewed while its source remains valid. Weather validity is bounded by both the feed deadline and the selected alert's expiry. Stale/unavailable data clears the weather light; an unlit ring does **not** certify that conditions are safe. A disconnected controller cannot leave a persistent old warning behind. Older satellites without `vector_weather_indicator` fall back to generic severity colours and cannot provide the new native lease/sequence guarantees until patched.
+
+Ask “Hey Vector, why is your ring on?” for the current status explanation. Green is reserved for short verified success; unread messages never use it. No real or simulated emergency broadcast is triggered by installing this feature.

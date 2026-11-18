@@ -54,6 +54,7 @@ class Satellite:
         self.listener = ListenerState()
         self.ambient = None
         self.native_update_indicator = False
+        self.native_weather_indicator = False
         self.updates = None
         self.native_version = None
 
@@ -224,7 +225,7 @@ class Satellite:
                 "interrupt_checks": self.interrupt_checks.copy(),
                 "listener": self.listener.snapshot(),
                 "native_version": self.native_version,
-                "update_indicator_capable": self.native_update_indicator,
+                "weather_indicator_capable": self.native_weather_indicator, "update_indicator_capable": self.native_update_indicator,
             }))
             temp.replace(state / "health.json")
             now = time.monotonic()
@@ -487,6 +488,7 @@ async def session(config, speech, dialogue, stop, state):
         from .update_indicator import UpdateIndicator
         satellite.updates = UpdateIndicator(state)
         satellite.native_update_indicator = details.get("vector_update_indicator") is True
+        satellite.native_weather_indicator = details.get("vector_weather_indicator") is True
         satellite.native_version = details.get("version")
         if satellite.hub:
             from .household_runtime import RoomRuntime

@@ -293,7 +293,7 @@ class Essentials:
                 return (
                     self.ring_info()
                     if self.ring_info
-                    else "Red means the physical microphone is muted. Weather warnings take priority over pending messages. Ask to read notifications; clearing deliveries never clears a weather warning."
+                    else "Solid red means the microphone is physically muted. Pulsing red is a weather warning; orange is a watch. Alternating blue and orange is a flood watch; blue and red is a flood warning. Blue alone is a flood advisory; yellow is another advisory. White means unread notifications. A brief green pulse means an update was verified. RGB means an update is running. Weather takes priority over notifications; clearing deliveries never clears a weather warning."
                 )
             if action == "read":
                 return self.notices.read()
