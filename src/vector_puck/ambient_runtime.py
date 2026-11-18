@@ -11,6 +11,7 @@ from contextlib import suppress
 import time
 
 from .ambient import RATE, loop_pcm
+from .ring_signals import weather_indicator
 
 
 class AmbientRuntime:
@@ -28,15 +29,24 @@ class AmbientRuntime:
         if s.hardware_muted:
             return "The physical microphone is muted; its red indicator takes priority. The microphone stays off."
         room = s.room_runtime
-        weather = getattr(room, "weather_kind", "none") if room else "none"
-        if weather in {"watch", "warning", "advisory"}:
-            return f"There is a weather {weather}. Ask for the current weather alerts for the official instructions. Clearing delivery notices will not clear it."
+        weather = weather_indicator(getattr(room, "weather_snapshot", None))["kind"]
+        if weather != "none":
+            colour = {"warning": "pulsing red", "watch": "pulsing orange", "advisory": "pulsing yellow",
+                      "flood-watch": "alternating orange and blue pulses", "flood-warning": "alternating red and blue pulses",
+                      "flood-advisory": "pulsing blue"}[weather]
+            return f"There is a {weather.replace('-', ' ')}; its signal is {colour}. Ask for the current weather alerts for official instructions. Clearing delivery notices will not clear it."
         if room and room.household.call():
             return "There is a room call. The receiving room can say answer call or decline call."
         if room and room.household.pending_messages():
-            return "There are pending room messages."
+            return "The white pulse means there are pending room messages."
         if self.essentials.notices.pending():
-            return "There are unread delivery notices. Ask me to read notifications, or clear delivery notifications."
+            return "The white pulse means there are unread delivery notices. Ask me to read notifications, or clear delivery notifications."
+        updates = getattr(s, "updates", None)
+        update = updates.indicator()["kind"] if updates else "none"
+        if update == "update":
+            return "The rotating RGB light means an application update is in progress."
+        if update == "updated":
+            return "The brief green pulse means the updater verified a successful update."
         return "There are no pending weather or message indicators. The ring also shows listening, speaking and alarms as they happen."
 
     def focus_taken(self, *, permanent=False):

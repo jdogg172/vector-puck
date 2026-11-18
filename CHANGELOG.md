@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Weather and notification ring signals
+
+- Orange watch, red warning, white unread-notification and yellow advisory pulses; flood watches alternate orange/blue, flood warnings red/blue, and flood advisories pulse blue. Green stays a brief verified-update success signal.
+- Native flood sequencing preserves its phase across lease renewal and yields to microphone privacy and foreground call/listen/alarm patterns. Weather and notification lights expire locally if the controller disconnects.
+- Local weather selection rejects stale, future and expired alerts, prioritizes warning over watch over advisory, and bounds the lease by feed validity and alert expiration. The portable runtime accepts a trusted local snapshot; it does not introduce a cloud weather account or automatic external requests.
+- Spoken ring explanations reflect the current weather, notification, update or privacy state. Visual signals do not change the existing emergency-speech policy or dismiss official warnings.
+
 ### Kitchen and light-ring features
 
 - Original local rain, thunderstorm, white-noise and brown-noise playback with a durable deadline, ten-hour default, bounded level and one-minute-to-twelve-hour limit. No long-form paid API audio or downloaded sound recordings.

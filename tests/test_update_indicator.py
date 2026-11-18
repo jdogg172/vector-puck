@@ -41,7 +41,7 @@ class UpdateIndicatorTests(unittest.TestCase):
             self.assertEqual(choose_indicator(weather=weather, call=True, messages=True, update=rgb), {'kind': weather})
         self.assertEqual(choose_indicator(call=True, update=rgb), {'kind': 'none'})
         self.assertEqual(choose_indicator(alarm=True, update=rgb), {'kind': 'none'})
-        self.assertEqual(choose_indicator(messages=True, update=rgb), {'kind': 'message'})
+        self.assertEqual(choose_indicator(messages=True, update=rgb), {'kind': 'message', 'duration_ms': 60000})
 
     def test_invalid_or_symlink_state_never_lights_ring(self):
         self.state.path.symlink_to(self.root / 'missing')

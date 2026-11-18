@@ -17,6 +17,7 @@ from .household import Household
 from .resident import status
 
 from .update_indicator import choose_indicator
+from .ring_signals import IndicatorLease, native_weather, weather_indicator
 
 RATE = 16000
 HEADER = struct.Struct("!16sQd")
@@ -128,8 +129,12 @@ class RoomRuntime:
         self.transport_task = None
         self.alarms, self.facts = alarms, facts
         self.alarm_ids = set()
-        self.weather_kind = "none"
-        self.last_indicator = None
+        self.weather_snapshot = None
+        self.indicator_lease = IndicatorLease()
+
+    def set_weather_snapshot(self, snapshot):
+        """Trusted local adapter supplies public alert fields plus freshness/expiry."""
+        self.weather_snapshot = snapshot
 
     def cancel(self):
         # The microphone forwarding gate closes synchronously before disk I/O.
@@ -431,12 +436,13 @@ class RoomRuntime:
                     messages = bool(self.household.pending_messages() or (ambient and ambient.essentials.notices.pending()))
                     updates = getattr(s, "updates", None)
                     update = updates.indicator() if updates and getattr(s, "native_update_indicator", False) else None
-                    indicator = choose_indicator(weather=self.weather_kind, call=incoming,
+                    weather = native_weather(weather_indicator(self.weather_snapshot),
+                        capable=getattr(s, "native_weather_indicator", False))
+                    indicator = choose_indicator(weather=weather, call=incoming,
                         alarm=bool(self.alarms and self.alarms.ringing()), messages=messages, update=update)
-                    key = indicator['kind']
-                    if key != self.last_indicator:
+                    if self.indicator_lease.due(indicator):
                         await s.send('vector-indicator', indicator)
-                        self.last_indicator = key
+                        self.indicator_lease.sent(indicator)
                 if self.household.owns_turn() and not occupied:
                     self.idle_since = self.idle_since or time.monotonic()
                     if time.monotonic() - self.idle_since > 0.8:
