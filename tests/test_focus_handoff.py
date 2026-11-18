@@ -297,11 +297,15 @@ class FocusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.wire.count("vector-focus"), 2)
         self.emit("run-pipeline", {"vector_barge_in": True})
         await self.hear("How far is Dallas?")
+        # Deliver a recognized question after losing this room's turn. The
+        # transport may already discard new PCM when ownership changes.
         self.s.hub = SimpleNamespace(household=SimpleNamespace(owns_turn=lambda: False))
         self.s.activity = "request"
-        self.emit("run-pipeline", {"vector_barge_in": True})
-        await self.hear("Hey Vector, how far is Dallas?")
+        accepted = await self.s.focus_input(self.s.gate.epoch, self.s.interrupt_serial,
+                                            time.monotonic(), "Hey Vector, how far is Dallas?", frame(83))
+        self.assertFalse(accepted)
         self.assertEqual(self.wire.count("detection"), 1)
+        self.assertEqual(self.wire.count("vector-question"), 0)
         self.assertEqual(self.s.focus_until, 0)
         self.assertEqual(self.requests, ["set a timer"])
 
