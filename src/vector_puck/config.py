@@ -17,7 +17,7 @@ class Config:
     vosk_model: str = "/models/vosk-model-small-en-us-0.15"
     whisper_model: str = "/models/faster-whisper-base.en"
     cpu_threads: int = 4
-    conversation_model: str = "gpt-6-astra"
+    conversation_model: str = "gpt-6.2-sol"
     voice_model: str = "gpt-realtime-2.1-mini"
     voice: str = "cedar"
     key_file: str = "/run/secrets/openai_key"
