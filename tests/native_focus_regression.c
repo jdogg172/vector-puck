@@ -28,7 +28,7 @@
 
 static struct wy_reader peer;
 static struct wy_event event;
-static unsigned played, cancels, stops, pipelines, chunks;
+static unsigned played, cancels, stops, pipelines, chunks, probes;
 static unsigned char reply[CHUNKS * CHUNK];
 
 static double now(void)
@@ -57,7 +57,7 @@ static void fixture(void)
 {
     assert(!mkdir("state", 0700) && !mkdir("etc", 0700) && !mkdir("etc/led-resources", 0700));
     assert(!mkfifo("keypad", 0600) && open("keypad", O_RDWR | O_CLOEXEC) >= 0);
-    file_text("state/config", "even_volume=off\n");
+    file_text("state/config", "even_volume=off\nwake_sound=off\n");
     file_text("state/adopted", "ha\n");
     file_text(PRIVACY "/state", "0\n");
     file_text("beam", "-1\n");
@@ -145,6 +145,7 @@ static void expect(const char *kind)
         cancels += !strcmp(event.type, "vector-cancel");
         stops += !strcmp(event.type, "audio-stop");
         pipelines += !strcmp(event.type, "run-pipeline");
+        probes += !strcmp(event.type, "vector-beam-sample");
         chunks += !strcmp(event.type, "audio-chunk");
     } while (strcmp(event.type, kind));
 }
@@ -212,47 +213,158 @@ static void geometry(int expected_x, int expected_y)
     assert(sx * expected_y == sy * expected_x && sx * expected_x + sy * expected_y > 0);
 }
 
+/* Keep the playback fixture intact. The host microphone loops this separate file.
+ * Encode only known version 3.3 metadata in the LSBs, including a real checksum. */
+static void bits(int16_t *f, int at, int count, int v)
+{
+    while (count) { count--; f[at++] = (v >> count) & 1; }
+}
+
+static void metadata(int vad, int playback)
+{
+    int16_t f[128] = {0};
+    if (vad >= 0) {
+        bits(f, 0, 8, 0xa5); bits(f, 8, 8, 0x63); bits(f, 16, 7, 0x68);
+        bits(f, 67, 1, playback); bits(f, 113, 2, vad);
+        unsigned sum = 0;
+        for (int i = 0; i < 120; i++) sum += f[i];
+        /* cap_read pads the last missing sample of this loop with a zero. */
+        f[70] = sum & 1;
+        bits(f, 120, 8, sum + f[70]);
+    }
+    FILE *out = fopen("input.raw", "r+b");
+    assert(out && !ftruncate(fileno(out), 6399 * sizeof *f));
+    for (int i = 0; i < 50; i++) {
+        size_t n = i == 49 ? 127 : 128;   /* host loops on a short final block */
+        assert(fwrite(f, sizeof *f, n, out) == n);
+    }
+    assert(!fclose(out));
+}
+
+static void end_listen(void)
+{
+    send_type("error", "{\"code\":\"stt-no-text-recognized\"}");
+    expect("run-pipeline");
+}
+
+static void quiet_to_voice(int vad, int playback)
+{
+    file_text("beam", "1");
+    metadata(0, 0); usleep(400000);
+    metadata(vad, playback); usleep(400000);
+}
+
+static void measured_wake(const char *beam)
+{
+    quiet_to_voice(3, 0);
+    file_text("beam", beam); usleep(280000);
+    send_type("detection", NULL); barrier();
+}
+
+static void probe_value(const char *field, long wanted)
+{
+    long n;
+    assert(wy_json_int(event.json, field, &n) && n == wanted);
+}
+
 static void calibration(void)
 {
     const char *neutral = "hassmic_solid_12f2";
-    file_text("beam", "6");
-    frame(neutral, 0, 0x030, .6);        /* equal pixels 4 and 5, observer sees 4:30 */
+    /* Identical strongly voiced frames with the same cached index cannot establish freshness. */
+    quiet_to_voice(3, 0);
+    send_type("vector-beam-probe", NULL); barrier();
+    assert(!probes);
+    send_type("vector-beam-probe-start", NULL);
+    send_type("vector-beam-probe", NULL); expect("vector-beam-sample");
+    assert(!event.payload_len);
+    probe_value("state", 0); probe_value("listen_requested", 0);
+    probe_value("vad", 3); probe_value("playback", 0); probe_value("own_sound", 0);
+    probe_value("raw", 1); probe_value("latched", -1);
+    send_type("vector-beam-probe", NULL); barrier(); assert(probes == 1);
+    send_type("detection", NULL); barrier();
+    usleep(400000); frame(neutral, 1, 0, .6);
+    file_text("beam", "7"); usleep(260000); frame(neutral, 1, 0, .5);
+    end_listen();
+    /* No metadata, vendor playback, and two competing voiced candidates. */
+    for (int i = 0; i < 3; i++) {
+        quiet_to_voice(i == 0 ? -1 : 3, i == 1);
+        file_text("beam", "6"); usleep(240000);
+        if (i == 2) { file_text("beam", "0"); usleep(240000); }
+        send_type("detection", NULL); barrier(); usleep(370000);
+        frame(neutral, 1, 0, .6);
+        end_listen();
+    }
+    measured_wake("6");
+    frame(neutral, 0, 0x030, .6);
     geometry(1, -1);
-    /* Local setting wins on a run with no override. Invalid input falls back
-     * to the device file, and later rooms never inherit another run's override. */
     file_text("state/vector-ring-offset-deg", "45\n");
     send_type("run-satellite", NULL); barrier();
-    frame(neutral, 0, 1u << 6, .5);
-    geometry(0, -1);
-    file_text("beam", "9");               /* same correction at a second position */
-    frame(neutral, 0, 1u << 9, .5);
-    geometry(-1, 0);
-    file_text("beam", "6");
+    frame(neutral, 0, 1u << 6, .6); geometry(0, -1);
     send_type("run-satellite", "{\"vector_ring_offset_deg\":-45}"); barrier();
-    frame(neutral, 0, 1u << 3, .5);
-    geometry(1, 0);
-    send_type("run-satellite", "{\"vector_ring_offset_deg\":200}"); barrier();
-    frame(neutral, 0, 1u << 6, .5);
+    frame(neutral, 0, 1u << 3, .6); geometry(1, 0);
     send_type("run-satellite", "{\"vector_ring_offset_deg\":1.5}"); barrier();
-    frame(neutral, 0, 1u << 6, .5);
-    file_text("beam", "0");
-    frame(neutral, 0, 1, .5);             /* wraps through LEDs 11, 0, 1 */
-    geometry(0, 1);
+    frame(neutral, 0, 1u << 6, .6);
+    file_text("beam", "0"); usleep(250000);
+    frame(neutral, 0, 1u << 6, .5);    /* opposite report cannot swing a latched turn */
+    end_listen();
+    measured_wake("9");
+    frame(neutral, 0, 1u << 9, .5); geometry(-1, 0);
     assert(!unlink("state/vector-ring-offset-deg"));
     send_type("run-satellite", NULL); barrier();
-    frame(neutral, 0, 0xc00, .5);
-    file_text("beam", "45");               /* degrees are not valid LED indices */
+    end_listen();
+    quiet_to_voice(3, 0);
+    send_type("detection", NULL); barrier();
     frame(neutral, 1, 0, .5);
-    double worst = 0;
-    for (int i = 0; i < 10; i++) {
-        double start = now();
-        file_text("beam", i % 2 ? "3" : "6");
-        frame(neutral, 0, i % 2 ? 0x006 : 0x030, .8);
-        double delay = now() - start;
-        if (delay > worst) worst = delay;
+    file_text("beam", "3");              /* substantiated report arrives just after wake */
+    frame(neutral, 0, 0x006, .45);
+    printf("PASS: stale/frozen, missing metadata, playback and conflicting reports neutral; "
+           "verified pre-wake and late latch, fresh turns, +45/-45 geometry and 180-degree outlier rejection\n");
+}
+
+/* Stall exactly one real property read inside the host daemon. Core transitions and mic
+ * delivery must continue, and its late result must not cross the pause/reopen boundary. */
+static void slow_beam(void)
+{
+    assert(!mkfifo("blocked-beam", 0600) && !rename("blocked-beam", "beam"));
+    int writer;
+    double deadline = now() + 2;
+    while ((writer = open("beam", O_WRONLY | O_NONBLOCK)) < 0) {
+        assert(now() < deadline); usleep(5000);
     }
-    printf("PASS: clockwise geometry, per-room +45/-45/0 and invalid input; max of 10 beam updates %.1f ms\n", worst * 1000);
-    assert(worst < .125);
+    unsigned before = chunks;
+    send_type("detection", NULL); barrier();
+    expect("audio-chunk"); assert(chunks > before);
+    frame("ntt-listening", 1, 0, .6);
+    send_type("pause-satellite", NULL); barrier();
+    send_type("run-satellite", NULL); expect("run-pipeline");
+    assert(now() < deadline);
+    file_text("resumed-beam", "3"); assert(!rename("resumed-beam", "beam"));
+    assert(write(writer, "9\n", 2) == 2 && !close(writer));
+    usleep(240000);
+    puts("PASS: blocked vendor property read allowed wake, mic audio, pause and a fresh run");
+}
+
+/* Polls have no effect before opt-in, after pause/restart or after the hard lease.
+ * A second start inside the same lease cannot extend it. */
+static void probe_limits(void)
+{
+    unsigned count = probes;
+    send_type("vector-beam-probe-start", NULL);
+    send_type("pause-satellite", NULL); barrier();
+    send_type("vector-beam-probe", NULL); barrier();
+    send_type("run-satellite", NULL); expect("run-pipeline"); usleep(200000);
+    send_type("vector-beam-probe", NULL); barrier(); assert(probes == count);
+    send_type("vector-beam-probe-start", NULL); barrier();
+    send_type("vector-beam-probe", NULL); expect("vector-beam-sample");
+    double expires = now() + 10.15;
+    while (now() < expires) {
+        usleep(250000); send_type("vector-beam-probe-start", NULL); barrier();
+        if (now() + .6 >= expires) break;
+    }
+    while (now() < expires) { usleep(100000); barrier(); }
+    send_type("vector-beam-probe", NULL); barrier();
+    assert(probes == count + 1);
+    puts("PASS: probe is opt-in, rate limited, revoked on pause and expires after ten seconds");
 }
 
 static void send_pcm(void)
@@ -303,7 +415,7 @@ static void question_handoff(void)
     off_t cut = output_size();
     assert(now() - start < 1.5 && cut < initial + (off_t)sizeof reply / 2);
     assert(pipelines == old_runs && cancels == old_cancels && played == old_played + 1);
-    frame("active-talking", 0, 0x180, .6);
+    frame("hassmic_solid_12f2", 1, 0, .6);
     send_type("transcript", "{\"text\":\"new question\"}");
     frame("active-thinking", 1, 0, .6);   /* old Q_STOP kept the new question listening */
     send_type("vector-listen", NULL);
@@ -324,18 +436,14 @@ static void test(void)
 {
     const char *neutral = "hassmic_solid_12f2", *talk = "active-talking";
     send_type("describe", NULL); expect("info");
-    assert(strstr(event.json, "\"vector_focus\":true") && strstr(event.json, "\"vector_question\":true"));
+    assert(strstr(event.json, "\"vector_beam_probe\":true") && strstr(event.json, "\"vector_focus\":true") && strstr(event.json, "\"vector_question\":true"));
     send_type("run-satellite", NULL); expect("run-pipeline");
     send_type("vector-indicator", "{\"kind\":\"message\",\"duration_ms\":60000}");
     send_type("vector-focus", NULL); send_type("vector-question", NULL); barrier();
     frame("hassmic_pulse_w0", 1, 0, .5);
-    send_type("detection", "{\"name\":\"hey_vector\"}");
-    frame(neutral, 1, 0, .6);
     calibration();
-    file_text("beam", "0");
-    frame(neutral, 0, 0xc00, .6);    /* 10,11 */
-    file_text("beam", "3");
-    frame(neutral, 0, 0x006, .6);    /* 1,2 */
+    /* The final test turn remains open on beam 3. Count its real transitions below. */
+    played = cancels = stops = 0; pipelines = 1;
     send_type("vector-alarm", "{\"action\":\"start\",\"id\":\"0123456789abcdef0123456789abcdef\",\"name\":\"test\"}");
     frame("hassmic_hold_3", 1, 0, .6);    /* timer below the stock listening layer */
     send_type("vector-alarm", "{\"action\":\"stop\",\"id\":\"0123456789abcdef0123456789abcdef\"}");
@@ -361,12 +469,15 @@ static void test(void)
     double focus = now();
     send_type("vector-focus", NULL);
     frame(neutral, 1, 0, .6);
-    file_text("beam", "6");
-    frame(neutral, 0, 0x030, .6);    /* 4,5 */
-    file_text("beam", "-1");
+    file_text("beam", "6"); usleep(180000);
     frame(neutral, 1, 0, .6);
-    file_text("beam", "9");
-    frame(neutral, 0, 0x180, .6);    /* 7,8 */
+    file_text("beam", "9"); usleep(180000);
+    frame(neutral, 1, 0, .6);
+    send_type("vector-beam-probe", NULL); barrier(); assert(probes == 1);
+    send_type("vector-beam-probe-start", NULL);
+    send_type("vector-beam-probe", NULL); expect("vector-beam-sample");
+    probe_value("state", 3); probe_value("own_sound", 1); probe_value("raw", 9);
+    probe_value("listen_requested", 0); probe_value("latched", -1);
     send_type("detection", "{\"name\":\"hey_vector\"}");  /* legacy detection during speech */
     send_type("vector-focus", "{\"duration_ms\":999999}");
     barrier();
@@ -374,7 +485,7 @@ static void test(void)
     usleep(350000);
     barrier();
     assert(chunks > mic_before && output_size() > before);
-    frame(talk, 0, 0x180, .5);
+    frame(neutral, 1, 0, .5);
     frame(talk, 1, 0, 8.0);
     double elapsed = now() - focus;
     assert(elapsed >= 7.95 && elapsed < 8.65);
@@ -385,7 +496,7 @@ static void test(void)
     assert(played == 1 && !cancels && pipelines == 3);
     check_playback();
     frame("hassmic_pulse_w0", 1, 0, 1);
-    printf("PASS: beams 0/3/6/9 and unknown; %.2f s focus; %zu speech bytes identical; one natural played\n",
+    printf("PASS: overlap neutral; %.2f s focus; %zu speech bytes identical; one natural played\n",
            elapsed, sizeof reply);
 
     question_handoff();
@@ -397,13 +508,18 @@ static void test(void)
         send_type("vector-listen", NULL);
         send_type("audio-start", AUDIO); expect("run-pipeline");
         send_type("vector-focus", NULL);
-        frame(talk, 0, 0x180, .6);
+        frame(neutral, 1, 0, .6);
         if (mode == 0) {
             send_type("audio-stop", NULL);
         } else {
             send_pcm();
             if (mode == 1) send_type("vector-stop", NULL);
-            else file_text(PRIVACY "/state", "1\n");
+            else {
+                send_type("vector-beam-probe-start", NULL);
+                usleep(180000);
+                send_type("vector-beam-probe", NULL); expect("vector-beam-sample");
+                file_text(PRIVACY "/state", "1\n");
+            }
             expect("vector-cancel");
         }
         expect("played");
@@ -414,11 +530,17 @@ static void test(void)
     }
     frame("mics-off_on", 1, 0, 1);
     send_type("vector-focus", NULL); send_type("vector-question", NULL); send_type("detection", NULL); barrier();
+    unsigned before_probe = probes;
+    send_type("vector-beam-probe-start", NULL); send_type("vector-beam-probe", NULL); barrier();
+    assert(probes == before_probe);
     unsigned mic = chunks, runs = pipelines;
     usleep(350000); barrier();
     assert(chunks == mic && pipelines == runs && cancels == 2 && played == played_before_stops + 3);
     frame("hassmic_pulse_w0", 0, 0, .5);
-    puts("PASS: natural end, explicit stop and mute clear focus; muted peer receives no mic audio or pipeline");
+    file_text(PRIVACY "/state", "0\n"); expect("run-pipeline"); usleep(200000);
+    send_type("vector-beam-probe", NULL); barrier();
+    assert(probes == before_probe);
+    puts("PASS: natural end, explicit stop and mute clear focus; mute revokes the active probe across unmute");
 }
 
 int main(int argc, char **argv)
@@ -435,8 +557,8 @@ int main(int argc, char **argv)
     if (argc != 3 || strcmp(argv[1], "--inside") || strcmp(argv[2], "fixture") || access("./daemon", X_OK)) {
         fprintf(stderr, "usage: %s ./build/hassmic-host\n", argv[0]); return 2;
     }
-    alarm(50);
-    fixture();
+    alarm(75);
+    fixture(); metadata(0, 0);
     for (int assets = 0; assets < 3; assets++) {
         if (assets) {
             file_text(PRIVACY "/state", "0\n");
@@ -453,15 +575,14 @@ int main(int argc, char **argv)
         if (!assets) test();
         else {
             send_type("run-satellite", NULL); expect("run-pipeline");
-            send_type("detection", NULL);
-            frame(assets == 1 ? "hassmic_solid_12f2" : "ntt-listening", 1, 0, .6);
-            file_text("beam", "3");
-            frame(assets == 1 ? "hassmic_hold_3" : "active-start", 1, 0, .6);
-            file_text("beam", "7");
-            frame(assets == 1 ? "hassmic_hold_7" : "active-start", 1, 0, .6);
+            if (assets == 2) { slow_beam(); probe_limits(); }
+            measured_wake("3");
+            frame(assets == 1 ? "hassmic_hold_3" : "ntt-listening", 1, 0, .6);
+            file_text("beam", "7"); usleep(200000);
+            frame(assets == 1 ? "hassmic_hold_3" : "ntt-listening", 1, 0, .6);
             send_type("run-satellite", "{\"vector_ring_offset_deg\":45}"); barrier();
-            frame(assets == 1 ? "hassmic_hold_9" : "ntt-listening", 1, 0, .6);
-            puts(assets == 1 ? "PASS: rotated stock hold without per-LED layers" : "PASS: stock-only neutral and native beam animation");
+            frame(assets == 1 ? "hassmic_hold_5" : "ntt-listening", 1, 0, .6);
+            puts(assets == 1 ? "PASS: latched rotated hold without per-LED layers" : "PASS: stock-only neutral");
         }
         close(peer.fd);
         wy_reader_free(&peer);

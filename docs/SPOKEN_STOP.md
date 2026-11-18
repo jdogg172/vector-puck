@@ -25,6 +25,14 @@ Physical Action or mute cancels the turn independently of recognition. Mute also
 
 The interruption queue holds up to 100 frames on a focus-capable session and 30 on a legacy session. Local confirmation checks normally run at least 1.5 seconds apart. After a confirmed wake, the next check can run sooner to catch a short follow-on question. CPU load and room audio affect when recognition finishes.
 
+## Listening over the speaker
+
+The controller can use the PCM it sends to the speaker as a short-lived reference for local speech recognition. When it finds a consistent echo, it reduces that component in the microphone copy used for recognition. Audible playback continues at the requested level. The reference is held in memory and cleared on cancellation, mute and playback completion.
+
+A wake cue can precede independent confirmation of the wake words. If local recognition recovers a factual question from this window, the recovery path answers with no home controls. An ambiguous or incomplete request can still be missed in a loud room.
+
+The light ring checks for a stable microphone direction during voiced input. The speaker's own audio, competing directions or a stale reading can produce a neutral listening light. This can happen during an interruption even when Vector understands the question.
+
 ## Calibrate one ring
 
 Use the same stationary puck and speak from two seats roughly a quarter turn apart. If the bright spot has the same angular error from both seats, write the correction in degrees to `vector-ring-offset-deg` in that puck's satellite state directory. The default directory is `/data/local/hassmic/state`. Zero is the default. Positive degrees move the light clockwise when viewed from above. The range is −180° to +180°. The satellite reads the value at the next `run-satellite`. A room controller can also supply the integer `vector_ring_offset_deg` in that event. Each device has its own calibration. If the spot points toward a nearby speaker or wall at only one seat, check from that seat with the background audio quiet before changing the offset.

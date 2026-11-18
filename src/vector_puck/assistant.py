@@ -30,13 +30,14 @@ class CloudError(RuntimeError):
     """Fixed safe diagnostic codes only; never remote bodies or user text."""
 
 
-def request_body(config, text: str, history: list[tuple[str, str]], home=None, household=None, essentials=None) -> dict:
+def request_body(config, text: str, history: list[tuple[str, str]], home=None, household=None, essentials=None, *, spoiler_mode=None) -> dict:
     if not isinstance(text, str) or not 1 <= len(text) <= config.max_request_chars:
         raise ValueError("Invalid recognized request")
     game_history = game_turn(text, history)
     if game_history is not None:
-        prefs = essentials.room_preferences() if essentials and callable(getattr(essentials, "room_preferences", None)) else {}
-        return research_request(config.conversation_model, text, game_history, prefs.get("spoilers"), CONVERSATION_STYLE)
+        if spoiler_mode is None and essentials and callable(getattr(essentials, "room_preferences", None)):
+            spoiler_mode = essentials.room_preferences().get("spoilers")
+        return research_request(config.conversation_model, text, game_history, spoiler_mode, CONVERSATION_STYLE)
     capabilities = HOME_INSTRUCTIONS if home or household else INSTRUCTIONS
     body = {
         "model": config.conversation_model, "store": False,
@@ -93,13 +94,13 @@ def unpack(data: dict) -> str:
 
 
 async def answer(config, key: str, text: str, history, guard, client_factory=None, home=None,
-                 household=None, essentials=None):
+                 household=None, essentials=None, *, spoiler_mode=None):
     if client_factory is None:
         import httpx
         client_factory = httpx.AsyncClient
     factory = client_factory
     guard()
-    body = request_body(config, text, history, home, household, essentials)
+    body = request_body(config, text, history, home, household, essentials, spoiler_mode=spoiler_mode)
     game = any(t["type"] == "web_search" for t in body["tools"])
     try:
         async with factory(timeout=45, trust_env=False, follow_redirects=False) as client:

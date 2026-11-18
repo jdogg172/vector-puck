@@ -10,10 +10,12 @@ from pathlib import Path
 import signal
 import time
 
-from .cloud_voice import Dialogue, read_key
+from .assistant import answer
+from .cloud_voice import Dialogue, cedar, read_key
 from .config import Config
+from .overlap_audio import PlaybackReference
 from .speech import Speech, done, question
-from .spoken_stop import FocusTurn, addressed_prompt, interruptions, playback_echo, question_started, words
+from .spoken_stop import FocusTurn, audio_level, transcribe_audio, addressed_prompt, interruptions, playback_echo, question_started, words
 from .state import Cancelled, FollowUp, Gate
 from .transport import MIC_FORMAT, REPLY_FORMAT, check_audio, read_event, send_event
 from .tune import working_audio
@@ -30,6 +32,8 @@ class Satellite:
         self.reader, self.writer, self.config, self.dialogue, self.stop = (
             reader, writer, config, dialogue, stop)
         self.gate = Gate()
+        self.playback_reference = PlaybackReference()
+        self.reference_epoch = None
         self.followup = FollowUp(config.followup_seconds, config.followup_turns, config.session_seconds)
         self.events = asyncio.Queue(maxsize=128)
         self.interrupt_audio = asyncio.Queue(maxsize=30)
@@ -91,16 +95,21 @@ class Satellite:
         if not self.allowed(epoch):
             raise Cancelled("Request cancelled")
 
+    def reset_reference(self) -> None:
+        self.playback_reference.reset()
+        self.reference_epoch = None
+
     def clear_focus(self) -> None:
+        self.reset_reference()
         self.focus_until = self.visual_focus_until = 0.0
         if self.focus_turn is not None:
             self.recording = False
         self.focus_turn = None
         self.reply_text = self.reply_query = ""
 
-    def interrupt_current(self, epoch: int, serial: int, received: float) -> bool:
+    def interrupt_current(self, epoch: int, serial: int, received: float, *, max_age=2) -> bool:
         return (self.barge_stream and self.interrupt_serial == serial
-                and self.gate.allowed(epoch) and time.monotonic() - received <= 2)
+                and self.gate.allowed(epoch) and time.monotonic() - received <= max_age)
 
     def focus_available(self, epoch: int) -> bool:
         room = self.room_runtime
@@ -114,6 +123,7 @@ class Satellite:
     async def light_focus(self) -> None:
         """Write lock held. A duplicate cannot renew the peer's visual lease."""
         if time.monotonic() >= self.visual_focus_until:
+            self.focus_until = 0.0
             self.visual_focus_until = time.monotonic() + 8
             await send_event(self.writer, "vector-focus")
             status("focus_acquired")
@@ -134,18 +144,25 @@ class Satellite:
         status("reply_interrupted")
 
     async def focus_input(self, epoch: int, serial: int, received: float,
-                          heard: str, pcm: bytes, *, wake_only: bool = False) -> bool:
+                          heard: str, pcm: bytes, *, wake_only: bool = False,
+                          recovered: bool = False, acoustic_head: str = "", ended: bool = False, check=None) -> bool:
         """Return true when this recognition window has been consumed."""
         phrase = self.config.wake_phrase
         tail = addressed_prompt(heard, phrase, self.reply_text)
         async with self.write_lock:
-            if not self.interrupt_current(epoch, serial, received):
+            if (not self.interrupt_current(epoch, serial, received, max_age=4 if recovered else 2)
+                    or (check and (not check.contiguous or
+                        (recovered and check.lease != self.visual_focus_until)))):
                 return False
             if not self.speaking or not self.reply_text or not self.focus_available(epoch):
                 self.focus_until = self.visual_focus_until = 0.0
                 return False
             focused = time.monotonic() < self.focus_until
-            if tail is None and not focused:
+            if recovered:
+                if (not self.question_capable or time.monotonic() >= self.visual_focus_until
+                        or (self.focus_until and not focused)):
+                    return False
+            elif tail is None and not focused:
                 return False
             prompt = heard.strip() if tail is None else tail
             if wake_only or playback_echo(prompt, self.reply_text):
@@ -164,7 +181,8 @@ class Satellite:
 
             # The existing room owns this new turn. Mute/Action invalidate the
             # entire session, but a handoff preserves the lease and played history.
-            turn = FocusTurn(epoch + 1, prompt, tail is not None, self.reply_query, self.reply_text)
+            turn = FocusTurn(epoch + 1, prompt, tail is not None, self.reply_query, self.reply_text,
+                             read_only=recovered, acoustic_head=acoustic_head, ended=ended)
             self.gate.cancel()
             self.clear_focus()
             self.focus_turn = turn
@@ -176,15 +194,19 @@ class Satellite:
             self.recording = True
             while not self.events.empty():
                 self.events.get_nowait()
-            self.enqueue((turn, dict(MIC_FORMAT, _vector_received_at=received), pcm))
+            if check and not ended:
+                pcm += check.following_audio
+            accepted = time.monotonic() if recovered else received
+            self.enqueue((turn, dict(MIC_FORMAT, _vector_received_at=accepted), pcm))
             # Preserve question audio received while Whisper was running. All
             # subsequent microphone frames go directly to the normal listener.
             while not self.interrupt_audio.empty():
                 previous, stream, data, payload = self.interrupt_audio.get_nowait()
                 if previous == epoch and stream == serial:
+                    payload = data.pop("_vector_recognition_pcm", payload)
                     self.enqueue(("audio-chunk", dict(data, _vector_epoch=turn.epoch), payload))
             await send_event(self.writer, "vector-question")
-            status("question_handoff")
+            status("question_handoff_read_only" if recovered else "question_handoff")
             if self.output_open and self.gate.allowed(turn.epoch):
                 self.output_open = False
                 await send_event(self.writer, "audio-stop")
@@ -206,6 +228,9 @@ class Satellite:
             elif kind == "audio-stop":
                 self.output_open = False
             await send_event(self.writer, kind, data, payload)
+            if kind == "audio-chunk" and self.reference_epoch == self.epoch:
+                self.playback_reference.push_playback(payload, rate=data["rate"])
+
 
     def invalidate(self, *, pause_sleep=True):
         if self.ambient:
@@ -234,6 +259,8 @@ class Satellite:
                 kind, data, _ = event
                 self.last_event = time.monotonic()
                 if kind == "audio-chunk":
+                    if self.barge_stream and self.last_event - self.last_audio > 2:
+                        self.reset_reference()
                     self.last_audio = self.last_event
                     data = dict(data, _vector_received_at=self.last_event,
                                 _vector_epoch=self.gate.epoch)
@@ -258,6 +285,8 @@ class Satellite:
                     self.invalidate()
                     self.barge_stream = False
                 elif kind == "run-pipeline":
+                    if self.barge_stream or data.get("vector_barge_in") is not True:
+                        self.reset_reference()
                     self.focus_until = self.visual_focus_until = 0.0
                     if self.focus_turn is not None:
                         self.focus_turn = None
@@ -284,6 +313,7 @@ class Satellite:
                     elif self.busy:
                         self.invalidate()
                 elif kind == "audio-stop" and self.barge_stream:
+                    self.reset_reference()
                     self.barge_stream = False
                     self.focus_until = self.visual_focus_until = 0.0
                     continue
@@ -321,6 +351,7 @@ class Satellite:
                 if kind == "audio-chunk" and self.barge_stream:
                     if self.config.experimental_spoken_stop and not self.gate.muted:
                         if self.interrupt_audio.full():
+                            self.reset_reference()
                             if self.focus_capable:
                                 # A gap can remove a negation or part of a question.
                                 self.interrupt_serial += 1
@@ -329,6 +360,14 @@ class Satellite:
                                     self.interrupt_audio.get_nowait()
                             else:
                                 self.interrupt_audio.get_nowait()
+                        overlap_pcm = event[2]
+                        if (self.reference_epoch == self.epoch and self.activity in {"idle", "request"}
+                                and not (self.room_runtime and (self.room_runtime.active or self.room_runtime.signaling))):
+                            check_audio(data, overlap_pcm)
+                            overlap_pcm = self.playback_reference.clean_mic(overlap_pcm, rate=16000)
+                        # Always overwrite peer metadata. Keep raw mic for Vosk
+                        # and the recognition-only copy for Whisper and handoff.
+                        data["_vector_recognition_pcm"] = overlap_pcm
                         self.interrupt_audio.put_nowait((self.gate.epoch, self.interrupt_serial,
                                                         data, event[2]))
                     continue
@@ -447,31 +486,50 @@ async def working(satellite, epoch, finished):
     # No audio-stop: the final reply completes this same output turn.
 
 
-async def respond(satellite, query, epoch):
+async def respond(satellite, query, epoch, *, read_only=False):
     finished = asyncio.Event()
     cue_task = asyncio.create_task(working(satellite, epoch, finished)) if satellite.config.working_sound else None
     completed = False
     try:
         if satellite.config.experimental_spoken_stop:
             await satellite.send("vector-listen")
-        result, pcm = await satellite.dialogue.respond(query, lambda: satellite.guard(epoch))
+        def guard():
+            satellite.guard(epoch)
+
+        if read_only:
+            # This route has no household context, local executors or fast paths.
+            guard()
+            satellite.dialogue.quota.reserve()
+            preferences = getattr(satellite.dialogue.essentials, "room_preferences", None)
+            settings = preferences() if callable(preferences) else None
+            spoiler = settings.get("spoilers") if isinstance(settings, dict) else None
+            spoiler_mode = spoiler if spoiler in ("avoid", "ask", "allow") else None
+            result = await answer(satellite.config, satellite.dialogue.key, query, [], guard,
+                                  spoiler_mode=spoiler_mode)
+            guard()
+            pcm = await cedar(satellite.config, satellite.dialogue.key, result, guard)
+        else:
+            result, pcm = await satellite.dialogue.respond(query, guard)
         finished.set()
         if cue_task:
             await cue_task  # No tune bytes may race the final reply.
         satellite.guard(epoch)
         await satellite.send("audio-start", REPLY_FORMAT)
         satellite.guard(epoch)
+        if satellite.config.experimental_spoken_stop:
+            satellite.playback_reference.start()
+            satellite.reference_epoch = epoch
         if satellite.focus_capable:
             satellite.reply_query, satellite.reply_text = query, result
         await paced(satellite, pcm, epoch)
         satellite.guard(epoch)
-        if ((satellite.hub and satellite.hub.household.call())
+        if (read_only or (satellite.hub and satellite.hub.household.call())
                 or getattr(getattr(satellite.dialogue, "essentials", None), "last_tool", None) == "sleep_sound"):
             # Call setup/answer must yield to the bridge, not an eight-second follow-up.
             satellite.followup.clear()
         else:
             satellite.followup.expect(epoch)
-        satellite.pending_history = (epoch, query, result)
+        satellite.pending_history = None if read_only else (epoch, query, result)
         # busy must drop before the device can send played + the next pipeline.
         satellite.busy = False
         await satellite.send("audio-stop")
@@ -493,7 +551,7 @@ async def respond(satellite, query, epoch):
 async def listen(satellite, speech):
     ring, size = deque(), 0
     recorded = None
-    post = 0
+    post = quiet_bytes = 0
     following = following_started = False
     turn = None
     awaiting_pipeline = True
@@ -524,7 +582,7 @@ async def listen(satellite, speech):
             turn, epoch = kind, kind.epoch
             speech.reset()
             ring.clear()
-            size = post = 0
+            size = post = quiet_bytes = 0
             following = following_started = awaiting_pipeline = False
             recorded = []
             satellite.recording = True
@@ -533,7 +591,7 @@ async def listen(satellite, speech):
             turn = None
             speech.reset()
             ring.clear()
-            size = post = 0
+            size = post = quiet_bytes = 0
             recorded = None
             following = following_started = False
             awaiting_pipeline = kind != "run-pipeline"
@@ -588,7 +646,6 @@ async def listen(satellite, speech):
                 size = 0
                 continue
             if satellite.room_runtime:
-                from .spoken_stop import audio_level
                 quality = audio_level(b"".join(ring)[-32000:])
                 if not await satellite.room_runtime.wake(quality):
                     satellite.recording = False
@@ -609,22 +666,32 @@ async def listen(satellite, speech):
             satellite.followup.consume()
             following_started = True
             satellite.recording = True
-        if not speech.endpoint_ready(payload, post / 32000):
+        if turn and turn.read_only:
+            quiet_bytes = quiet_bytes + len(payload) if audio_level(payload) < 0.0006 else 0
+        if not (turn and (turn.ended or quiet_bytes >= 14400)) and not speech.endpoint_ready(payload, post / 32000):
             continue
         satellite.busy = True
         awaiting_pipeline = True
         try:
             query = None
+            read_only = bool(turn and turn.read_only)
             # A forced endpoint at the 30-second recording cap may truncate a
             # control or its negation. Require a natural endpoint for handoff.
             if not turn or (post < 30 * 32000 and satellite.focus_available(epoch)):
                 await satellite.send("transcript", {"text": ""})
-                text = await asyncio.to_thread(speech.transcribe, b"".join(recorded)[-32000 * 34:])
+                pcm = b"".join(recorded)[-32000 * 34:]
+                if read_only:
+                    text = await asyncio.to_thread(transcribe_audio, speech, pcm)
+                else:
+                    text = await asyncio.to_thread(speech.transcribe, pcm)
                 if turn:
                     if turn is not satellite.focus_turn:
                         continue
                     if satellite.focus_available(epoch):
                         query = turn.query(text, satellite.config.wake_phrase)
+                        if query is None and not read_only:
+                            query = turn.verify_information(text, satellite.config.wake_phrase)
+                            read_only = query is not None
                     turn = satellite.focus_turn = None
                 else:
                     query = text.strip() if following else question(text, satellite.config.wake_phrase)
@@ -634,16 +701,17 @@ async def listen(satellite, speech):
                 await satellite.finish()
                 continue
             satellite.guard(epoch)
-            direct_alarm = (satellite.hub and satellite.hub.fast_path(query))
-            direct_basic = satellite.dialogue.essentials.fast_path(query)
-            if done(query) and not direct_alarm and not direct_basic:
-                satellite.followup.clear()
-                satellite.dialogue.clear()
-                await satellite.finish()
-                continue
-            if not following:
-                satellite.followup.begin()
-            satellite.active = asyncio.create_task(respond(satellite, query, epoch))
+            if not read_only:
+                direct_alarm = satellite.hub and satellite.hub.fast_path(query)
+                direct_basic = satellite.dialogue.essentials.fast_path(query)
+                if done(query) and not direct_alarm and not direct_basic:
+                    satellite.followup.clear()
+                    satellite.dialogue.clear()
+                    await satellite.finish()
+                    continue
+                if not following:
+                    satellite.followup.begin()
+            satellite.active = asyncio.create_task(respond(satellite, query, epoch, read_only=read_only))
             try:
                 await satellite.active
             except asyncio.CancelledError:
