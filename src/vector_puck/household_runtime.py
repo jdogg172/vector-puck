@@ -16,13 +16,16 @@ from .transport import check_audio
 from .household import Household
 from .resident import status
 
+from .update_indicator import choose_indicator
+
 RATE = 16000
 HEADER = struct.Struct("!16sQd")
 
 
-def call_ring_audio():
+def call_ring_audio(outgoing=False):
     """Original two-burst telephone chime, independent of cloud speech."""
     rate = 24000
+    amplitude = 2400 if outgoing else 6000
     samples = array("h")
     for _ in range(2):
         for i in range(int(rate * 0.32)):
@@ -30,7 +33,7 @@ def call_ring_audio():
             envelope = min(t / 0.012, 1, max(0, (0.32 - t) / 0.025))
             samples.append(
                 round(
-                    4500
+                    amplitude
                     * envelope
                     * (math.sin(2 * math.pi * 440 * t) + math.sin(2 * math.pi * 660 * t))
                 )
@@ -118,6 +121,8 @@ class RoomRuntime:
         self.active = None
         self.rang = set()
         self.last_ring = {}
+        self.signaling = None
+        self.signaling_ready = asyncio.Event()
         self.ring_clip = call_ring_audio()
         self.idle_since = None
         self.transport_task = None
@@ -143,8 +148,44 @@ class RoomRuntime:
                 self.alarms.dismiss_ringing(ident)
             self.alarm_ids.clear()
 
+    def control_call(self, action, epoch):
+        """Answer belongs to the called room, independent of conversation leases."""
+        s = self.satellite
+        expected = self.signaling
+        current = self.household.call()
+        if (
+            not expected
+            or not s.allowed_base(epoch)
+            or not current
+            or current["id"] != expected["id"]
+            or current["status"] != "ringing"
+        ):
+            return False
+
+        def guard():
+            if not s.allowed_base(epoch):
+                raise ControlCancelled("Call control cancelled")
+
+        if action == "answer" and current["callee"] == self.household.room:
+            self.household.answer_call(guard)
+            current = self.household.call()
+            accepted = bool(
+                current and current["id"] == expected["id"] and current["status"] == "active"
+            )
+            if accepted:
+                status("household_call_accepted")
+            return accepted
+        if action == "end":
+            self.household.end_call(guard)
+            return True
+        return False
+
     async def ring_call(self, call):
-        """Repeat a local ring until answered/declined; never opens call audio."""
+        """Continuous local signalling with live, explicit call controls on both ends.
+
+        Keep the AFE echo-reference stream open across silent gaps. Finishing an
+        accepted ring uses audio-stop, never vector-stop (which emits cancel).
+        """
         s = self.satellite
         if (
             not s.allowed_base(s.epoch)
@@ -156,17 +197,19 @@ class RoomRuntime:
             or self.active
         ):
             return False
-        if time.monotonic() - self.last_ring.get(call["id"], -100) < 6:
-            return False
-        s.activity = "announcement"
+        s.activity = "call_wait"
         s.busy = True
+        s.followup.clear()
+        self.household.release()
         s.epoch += 1
         epoch = s.epoch
-        self.last_ring = {call["id"]: time.monotonic()}
-        rate, pcm = self.ring_clip
-        first = call["id"] not in self.rang
-        prompt = self.household.root / "call-prompts" / (call["caller"] + ".pcm")
-        if first:
+        self.signaling = call
+        self.signaling_ready.clear()
+        outgoing = call["caller"] == self.household.room
+        rate, tone = call_ring_audio(outgoing=outgoing)
+        pcm = tone
+        if not outgoing:
+            prompt = self.household.root / "call-prompts" / (call["caller"] + ".pcm")
             try:
                 if not prompt.is_symlink() and 0 < prompt.stat().st_size <= rate * 2 * 8:
                     speech = prompt.read_bytes()
@@ -174,6 +217,8 @@ class RoomRuntime:
                         pcm += bytes(rate // 3 * 2) + speech
             except OSError:
                 pass
+        first_cycle = pcm + bytes(max(0, rate * 2 * 6 - len(pcm)))
+        cycle = tone + bytes(rate * 2 * 6 - len(tone))
         s.alert_epoch = epoch
         s.alert_played.clear()
         played = False
@@ -188,40 +233,49 @@ class RoomRuntime:
             )
 
         try:
-            await s.send("detection", {"name": "hey_vector"})
+            await s.send("detection", {"name": s.config.wake_phrase})
             await s.send("transcript", {"text": ""})
             if getattr(s, "barge_capable", False):
                 await s.send("vector-listen")
             await s.send("audio-start", {"rate": rate, "width": 2, "channels": 1})
             started = time.monotonic()
-            for offset in range(0, len(pcm), 4800):
-                if not pending():
-                    break
+            offset = 0
+            status("household_call_ringback" if outgoing else "household_call_signaling")
+            while pending():
+                clip = first_cycle if offset < len(first_cycle) else cycle
+                pos = (
+                    offset
+                    if offset < len(first_cycle)
+                    else (offset - len(first_cycle)) % len(cycle)
+                )
+                chunk = clip[pos : pos + 4800]
                 delay = started + offset / (rate * 2) - time.monotonic()
                 if delay > 0:
                     await asyncio.sleep(delay)
                 if not pending():
                     break
-                await s.send(
-                    "audio-chunk",
-                    {"rate": rate, "width": 2, "channels": 1},
-                    pcm[offset : offset + 4800],
-                )
+                await s.send("audio-chunk", {"rate": rate, "width": 2, "channels": 1}, chunk)
+                offset += len(chunk)
             if s.output_open:
                 await s.send("audio-stop")
+            # Drain at most one paced packet and observe played before the bridge
+            # starts. A vector-stop here would cancel an already accepted call.
             deadline = time.monotonic() + 2
-            while pending() and not s.alert_played.is_set() and time.monotonic() < deadline:
-                await asyncio.sleep(0.05)
+            while (
+                s.allowed_base(epoch)
+                and not (s.alert_played.is_set() and self.signaling_ready.is_set())
+                and time.monotonic() < deadline
+            ):
+                await asyncio.sleep(0.02)
             played = s.alert_played.is_set()
-            if not pending() and s.connected and s.allowed_base(epoch):
-                await s.send("vector-stop", {"preserve_alarm": 1})
-            if played:
-                self.rang.add(call["id"])
-            status("household_call_rang")
+            if s.allowed_base(epoch) and not (played and self.signaling_ready.is_set()):
+                raise OSError("Call signalling playback did not finish")
+            status("household_call_signaling_finished")
             return played
         finally:
             if s.output_open:
                 await s.send("audio-stop")
+            self.signaling = None
             s.alert_epoch = None
             s.busy = False
             s.activity = "idle"
@@ -367,22 +421,22 @@ class RoomRuntime:
                 s.busy or s.speaking or s.recording or s.followup.active() or s.followup.ready
             )
             try:
-                self.household.heartbeat(muted=muted, busy=bool(occupied or self.active))
+                self.household.heartbeat(muted=muted, busy=bool((occupied and s.activity != "ambient") or self.active))
                 self.household.export_public()
                 await self.sync_alarms()
                 if s.native_indicator:
-                    indicator = self.weather_kind
                     call = self.household.call()
-                    incoming = bool(
-                        call
-                        and call["status"] == "ringing"
-                        and call["callee"] == self.household.room
-                    )
-                    if indicator == "none" and (incoming or self.household.pending_messages()):
-                        indicator = "message"
-                    if indicator != self.last_indicator:
-                        await s.send("vector-indicator", {"kind": indicator})
-                        self.last_indicator = indicator
+                    incoming = bool(call and call['status'] in {'ringing', 'active'})
+                    ambient = getattr(s, "ambient", None)
+                    messages = bool(self.household.pending_messages() or (ambient and ambient.essentials.notices.pending()))
+                    updates = getattr(s, "updates", None)
+                    update = updates.indicator() if updates and getattr(s, "native_update_indicator", False) else None
+                    indicator = choose_indicator(weather=self.weather_kind, call=incoming,
+                        alarm=bool(self.alarms and self.alarms.ringing()), messages=messages, update=update)
+                    key = indicator['kind']
+                    if key != self.last_indicator:
+                        await s.send('vector-indicator', indicator)
+                        self.last_indicator = key
                 if self.household.owns_turn() and not occupied:
                     self.idle_since = self.idle_since or time.monotonic()
                     if time.monotonic() - self.idle_since > 0.8:
@@ -418,11 +472,7 @@ class RoomRuntime:
                     if call and call["status"] == "active":
                         self.transport_task = asyncio.create_task(self.bridge(call))
                         await asyncio.sleep(0)
-                    elif (
-                        call
-                        and call["callee"] == self.household.room
-                        and call["status"] == "ringing"
-                    ):
+                    elif call and call["status"] == "ringing":
                         await self.ring_call(call)
                     else:
                         task = s.hub.kitchen.claim_due()

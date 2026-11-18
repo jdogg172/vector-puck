@@ -211,6 +211,14 @@ class Household:
         with self.tx() as db:
             row = db.execute("SELECT * FROM turn WHERE id=1").fetchone()
             if row["until"] > now:
+                if row["owner"] == self.room and row["token"] is None:
+                    # Cooldown suppresses delayed copies at other rooms, while
+                    # this room may accept a fresh independently confirmed wake.
+                    self.token = secrets.token_hex(16)
+                    self.valid_until = now + 15
+                    db.execute("UPDATE turn SET token=?,until=? WHERE id=1",
+                               (self.token, self.valid_until))
+                    return True
                 if row["owner"] == self.room and row["token"] == self.token:
                     self.valid_until = row["until"]
                     return True
@@ -251,7 +259,7 @@ class Household:
         with self.tx() as db:
             # A short tail suppresses the same utterance arriving later at the other room.
             db.execute(
-                "UPDATE turn SET until=? WHERE owner=? AND token=?",
+                "UPDATE turn SET token=NULL,until=? WHERE owner=? AND token=?",
                 (self.clock() + 1, self.room, self.token),
             )
         self.token, self.valid_until = None, 0

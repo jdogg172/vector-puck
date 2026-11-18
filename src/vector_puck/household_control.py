@@ -87,6 +87,7 @@ class HouseholdControl:
         self.kitchen = SharedKitchen(local, self.household.root / "shopping.sqlite3")
         self.alarms = Alarms(state / "alarms.sqlite3", timezone=str(self.zone))
         self.alarm_ready = False
+        self.call_ready = False
 
     @classmethod
     def load(cls, path: Path, state: Path):
@@ -116,7 +117,7 @@ class HouseholdControl:
             if path.exists() or path.is_symlink():
                 raise ValueError("Preserve existing cached prompts before replacing them")
             dialogue.quota.reserve()
-            text = f"Call from {name}. Say {dialogue.config.wake_phrase}, answer the call."
+            text = f"Incoming call from {name}."
             pcm = await cedar(dialogue.config, dialogue.key, text, lambda: None)
             if not pcm or len(pcm) % 2 or len(pcm) > 24000 * 2 * 8:
                 raise ValueError("Call prompt exceeds playback bounds")
@@ -140,6 +141,10 @@ class HouseholdControl:
         if not reading and not write_intent(utterance):
             return {"message": "Please ask directly for the household change. Nothing was changed."}
         try:
+            if name == "room_call" and action == "start" and not self.call_ready:
+                return {
+                    "message": "Calling needs the patched microphone stream and spoken call controls enabled. No call was opened."
+                }
             if name == "alarm_clock":
                 if not self.alarm_ready and action != "status":
                     return {

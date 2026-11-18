@@ -220,6 +220,18 @@ class HouseholdControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(runtime.audio.call)
         self.assertIsNone(other.household.call())
 
+    async def test_start_call_requires_live_spoken_control_capability(self):
+        other = HouseholdControl({**self.data, "room": "kitchen"}, self.root / "other")
+        self.hub.household.heartbeat(muted=False, busy=False)
+        other.household.heartbeat(muted=False, busy=False)
+        args = {"action": "start", "room": "Kitchen"}
+        denied = await self.hub.execute("room_call", args, lambda: None, "Call Kitchen")
+        self.assertIn("No call was opened", denied["message"])
+        self.assertIsNone(self.hub.household.call())
+        self.hub.call_ready = True
+        await self.hub.execute("room_call", args, lambda: None, "Call Kitchen")
+        self.assertEqual(other.household.call()["status"], "ringing")
+
 
 class MultiRoomSessionTests(unittest.IsolatedAsyncioTestCase):
     async def test_two_real_sessions_elect_one_and_commit_shared_list_once(self):

@@ -133,6 +133,10 @@ class Dialogue:
         self.history, self.updated = [], 0.0
         self.home = home
         self.household = household
+        from .essentials import Essentials
+        self.essentials = Essentials(state, root=household.household.root if household else None,
+                                     room=household.household.room if household else "default",
+                                     kitchen=household.kitchen if household else None)
 
     def clear(self):
         self.history.clear()
@@ -146,13 +150,18 @@ class Dialogue:
         self.expire()
         guard()
         self.quota.reserve()
+        self.essentials.last_tool = None
+        basic = self.essentials.fast_path(text)
         direct = self.household.fast_path(text) if self.household else None
-        if direct:
+        if basic:
+            name, args = basic
+            result = (await self.essentials.execute(name, args, guard, utterance=text))["message"]
+        elif direct:
             name, args = direct
             result = (await self.household.execute(name, args, guard, utterance=text))["message"]
         else:
             result = await answer(self.config, self.key, text, self.history, guard,
-                                  home=self.home, household=self.household)
+                                  home=self.home, household=self.household, essentials=self.essentials)
         guard()
         audio = await cedar(self.config, self.key, result, guard)
         guard()

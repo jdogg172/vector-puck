@@ -106,3 +106,19 @@ python3 tests/native_alarm_regression.py .hardware/echo-dot-assist/build/hassmic
 ```
 
 These harnesses isolate synthetic audio/input from physical devices. They do not replace the operator acceptance steps above or the additional [household acceptance checks](HOUSEHOLD.md#acceptance-and-rollback).
+
+## Current source validation — 2026-11-18
+
+- 171 offline public-package tests passed on the development host, with one Python-version-specific test skipped there.
+- The household deployment candidate separately passed 259 tests in an isolated container with no network and temporary databases on memory storage.
+- The actual patched native C program passed privacy/mute/Action/spoken-stop tests, persistent alarm dismissal tests, and the RGB cycle/green pulse/device-side timeout test with fake LEDs, synthetic PCM and an isolated network.
+- Biscuit and radar ARM builds retain model-specific linking and the existing interruption controls. Each household application bundle was verified against its own existing owner key; no key is included here.
+- Physical visual acceptance, normal-seat wake/stop over ambience, ten-hour speaker endurance and two-person call acceptance remain separate checks. Live delivery adapters and Apple Music are not implemented by this source.
+
+The additional native LED regression is:
+
+```bash
+python3 tests/native_update_ring_regression.py .hardware/echo-dot-assist/build/hassmic-host
+```
+
+It uses synthetic LEDs/audio and a simulated privacy latch. It does not record a microphone, contact a satellite, or substitute for a physical display check.

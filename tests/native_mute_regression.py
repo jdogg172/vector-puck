@@ -121,8 +121,31 @@ class Daemon:
         return index + 1
 
 
+def prepare_test_ring(binary, root, env):
+    """Generate a ring in an empty synthetic tree; never touch system LEDs."""
+    import shutil
+    etc = root / "led-root"
+    resources = etc / "led-resources"
+    resources.mkdir(parents=True)
+    layers = {"5": ["volume_step-05"], "4": ["active-end", "active-start", "anim_start_error_short", "active-thinking", "active-talking"],
+              "3": ["ready-timer"], "2": ["call_incoming"], "1": ["mics-off_on"], "0": ["zzz_rainbow"]}
+    for names in layers.values():
+        for name in names:
+            (resources / (name + ".animation")).write_text("loop\n1000:" + ",".join(["F00"] * 12) + "\n")
+    config = json.dumps(dict(numberOfLayers=6, Layers=layers))
+    (resources / "layer_config_common.json").write_text(config)
+    (etc / "layer_config_common.json.pre-hassmic").write_text(config)
+    env.update(HASSMIC_LED_ROOT=str(etc), HASSMIC_FAKE_LED=str(root / "ledctrl.log"))
+    generated = root / "generated-ring"
+    generated.mkdir()
+    subprocess.run([str(binary), "-G", str(generated)], env=env, check=True, capture_output=True)
+    for file in generated.iterdir():
+        shutil.copy2(file, (etc / "hassmic-leds.digest") if file.name == "digest" else (resources / file.name))
+    (root / "state/adopted").write_text("ha\n")
+
+
 @asynccontextmanager
-async def daemon(binary, *, muted=True, soft=False):
+async def daemon(binary, *, muted=True, soft=False, led_ring=False):
     with tempfile.TemporaryDirectory(prefix="vector-mute-") as temporary:
         root = Path(temporary)
         (root / "state").mkdir()
@@ -148,6 +171,8 @@ async def daemon(binary, *, muted=True, soft=False):
             "HASSMIC_PLAY": str(root / "play.raw"),
             "HASSMIC_FAKE_AFE": "0:100:10",
         }
+        if led_ring:
+            prepare_test_ring(binary, root, env)
         command = [
             "bwrap",
             "--die-with-parent",

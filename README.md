@@ -14,9 +14,12 @@ This is a community experiment for hardware owners. The controller and patches a
 - Experimental local spoken stop during the working tune and Cedar replies, with a short confirmation tone.
 - Optional, allowlisted Home Assistant audio, thermostat, and TV-script controls, starting in dry-run mode.
 - Optional shared shopping lists, named timers/reminders, persistent alarms, single-responder coordination, accepted room calls and announcements.
+- Local rain/thunderstorm/white-noise/brown-noise playback, saved recipes with room-specific cooking progress, and deterministic conversions.
+- Expiring RGB update status and a verified-completion green pulse, subordinate to mute and urgent indications.
+- A status-only delivery inbox foundation; delivery account adapters are not included.
 - A restricted Docker controller, checksum-pinned model downloads, tests, and rollback instructions.
 
-**Version 0.3 adds optional household mode and the full-size Echo 2.** Start with [the household guide](docs/HOUSEHOLD.md) for two or more rooms, alarms, calling and shared lists. [The changelog](CHANGELOG.md) records features and fixes. Home control remains disabled until an owner configures it; generic shell and HA-service tools are never exposed. Web search, calendars, live weather sources, and personal deployment settings are not included. Software validation is separate from real hardware acceptance; see [validation](docs/VALIDATION.md).
+**The current source adds [kitchen essentials and update lights](docs/KITCHEN.md) to the optional household mode and full-size Echo 2 support.** Start with [the household guide](docs/HOUSEHOLD.md) for two or more rooms, alarms, calling and shared lists. [The changelog](CHANGELOG.md) records features and fixes. Home control remains disabled until an owner configures it; generic shell and HA-service tools are never exposed. Web search, calendars, live weather sources, and personal deployment settings are not included. Software validation is separate from real hardware acceptance; see [validation](docs/VALIDATION.md).
 
 ## Requirements
 

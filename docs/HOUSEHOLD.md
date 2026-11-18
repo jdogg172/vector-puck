@@ -87,7 +87,7 @@ If combining with optional Home Assistant, add the private HA mapping and token 
 
 When both rooms hear a wake phrase, a short election chooses one eligible room by observed microphone level, with a deterministic tie-break. It is a practical arbitration heuristic, not sound-source localization or speaker identification. The winner retains the lease during its bounded follow-up conversation. Physical room acoustics still need testing.
 
-Incoming calls repeat an original local ringtone every six seconds until answered, declined or timed out after 45 seconds. Ringing never opens a microphone bridge. Optional caller-name speech can be prepared once while the room services are stopped:
+Incoming calls repeat an original local ringtone every six seconds until answered, declined or timed out after 45 seconds. The calling device plays quieter repeating ringback. Local call-control recognition stays active through the silent gaps: say the configured wake phrase followed by “answer call”, “answer the call”, “pick up”, “decline call” or “hang up”. Only the called room can accept; the caller's conversation lease cannot block that acceptance. Keep `experimental_spoken_stop` enabled and use the documented native microphone-stream patch; otherwise the controller refuses to start a call. Ringing never opens a microphone bridge. Optional caller-name speech can be prepared once while the room services are stopped:
 
 ```bash
 docker compose -f compose.household.local.json stop
@@ -111,3 +111,17 @@ This explicit step uses billed Cedar generation for static room-name prompts, st
 Test when every participating room is free. Confirm shared items from both rooms, only one reply to a shared wake, a real incoming ring, explicit call answer/two-way audio/hang-up, mic-mute cutoff, Action/spoken stop during speech, a two-minute alarm with repeated snooze/off, and behavior after controller/device restarts. Synthetic tests do not establish acoustic acceptance.
 
 Back up the entire private shared directory and each room's state while stopped. To roll back, stop all household controllers, restore the previous image/config/native program as needed, and restart only the intended single controller per device. Preserve current lists/schedules rather than blindly restoring an older empty database. See the [hardware rollback](HARDWARE.md#rollback) and [validation guide](VALIDATION.md).
+
+## Repeated wakes and listener recovery
+
+A released response slot permits a fresh wake at the same room immediately;
+its short cooldown only suppresses delayed duplicates at other rooms. The normal
+listener reports content-free progress separately from audio transport. If an
+idle consumer is stuck on a missing pipeline or obsolete cancellation state,
+it closes and reconnects the session without unmuting or replaying queued speech.
+Mute/cancel clears queued audio, and stale microphone packets are discarded.
+Wake-free follow-up speech retains ownership while it is being captured.
+
+These repairs passed isolated software tests. A household test also confirmed
+repeat waking after follow-up expiry on one supported puck without toggling mute
+or restarting. Real-room call answering and two-way audio remain unverified.
